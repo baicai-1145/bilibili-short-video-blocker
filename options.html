@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>B站短视频屏蔽设置</title>
+    <link rel="stylesheet" href="options.css" />
+  </head>
+  <body>
+    <main class="container">
+      <h1 class="title">短视频屏蔽阈值</h1>
+      <form id="threshold-form" class="form" autocomplete="off">
+        <label for="threshold-input" class="label">隐藏时长低于（秒）：</label>
+        <input
+          id="threshold-input"
+          class="input"
+          type="number"
+          min="0"
+          step="1"
+          required
+        />
+        <p class="hint">0 表示停用过滤。</p>
+        <button type="submit" class="button">保存</button>
+        <p id="status-text" class="status" role="status"></p>
+      </form>
+    </main>
+    <script src="src/shared.js"></script>
+    <script src="src/options.js"></script>
+  </body>
+</html>

@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>阈值快速调节</title>
+    <link rel="stylesheet" href="options.css" />
+  </head>
+  <body class="popup-body">
+    <main class="container popup-container">
+      <h1 class="title popup-title">过滤阈值</h1>
+      <form id="threshold-form" class="form" autocomplete="off">
+        <label for="threshold-input" class="label">隐藏时长低于（秒）：</label>
+        <input
+          id="threshold-input"
+          class="input"
+          type="number"
+          min="0"
+          step="1"
+          required
+        />
+        <p class="hint">0 表示暂停过滤。</p>
+        <button type="submit" class="button">保存</button>
+        <p id="status-text" class="status" role="status"></p>
+      </form>
+    </main>
+    <script src="src/shared.js"></script>
+    <script src="src/options.js"></script>
+  </body>
+</html>

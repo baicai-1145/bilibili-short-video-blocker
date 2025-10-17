@@ -1,0 +1,19 @@
+{
+  "manifest_version": 3,
+  "name": "Bilibili Short Video Blocker",
+  "version": "0.1.0",
+  "description": "屏蔽B站短视频推荐，支持首页和视频页侧边栏阈值过滤。",
+  "permissions": ["storage"],
+  "options_page": "options.html",
+  "action": {
+    "default_title": "调整短视频屏蔽阈值",
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": ["*://*.bilibili.com/*"],
+      "js": ["src/shared.js", "src/content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
