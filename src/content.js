@@ -37,7 +37,8 @@ const CARD_CONFIGS = [
       '.bili-video-card__stats__duration',
       '.bili-video-card__mask span.duration',
       '.bili-video-card__info--right span'
-    ]
+    ],
+    wrapperSelectors: ['.feed-card', '.bili-feed-card']
   },
   {
     name: 'right-rail-card',
@@ -173,7 +174,7 @@ function evaluateCard(card) {
       card.dataset.bsrbDurationSeconds = String(durationSeconds);
     }
   }
-  applyVisibility(card, durationSeconds);
+  applyVisibility(card, durationSeconds, config);
 }
 
 function rescanTrackedCards() {
@@ -245,11 +246,36 @@ function parseDurationToSeconds(text) {
   return seconds;
 }
 
-function applyVisibility(card, durationSeconds) {
+function applyVisibility(card, durationSeconds, config) {
   const shouldHide = Number.isFinite(durationSeconds) && durationSeconds >= 0 && thresholdSeconds > 0 && durationSeconds < thresholdSeconds;
-  if (shouldHide) {
-    card.classList.add(HIDDEN_CLASS);
-  } else {
-    card.classList.remove(HIDDEN_CLASS);
+  const targets = collectVisibilityTargets(card, config);
+  targets.forEach((node) => {
+    if (!node || !(node instanceof HTMLElement)) {
+      return;
+    }
+    if (shouldHide) {
+      node.classList.add(HIDDEN_CLASS);
+    } else {
+      node.classList.remove(HIDDEN_CLASS);
+    }
+  });
+}
+
+function collectVisibilityTargets(card, config) {
+  const nodes = new Set();
+  if (card && card instanceof HTMLElement) {
+    nodes.add(card);
   }
+  if (config && Array.isArray(config.wrapperSelectors)) {
+    config.wrapperSelectors.forEach((selector) => {
+      if (!selector || typeof selector !== 'string') {
+        return;
+      }
+      const wrapper = card.closest(selector);
+      if (wrapper && wrapper instanceof HTMLElement) {
+        nodes.add(wrapper);
+      }
+    });
+  }
+  return Array.from(nodes);
 }
