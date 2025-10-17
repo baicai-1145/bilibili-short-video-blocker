@@ -68,7 +68,9 @@ let storageArea = null;
 let storageAreaName = 'sync';
 let scanScheduled = false;
 
-init();
+if (!shouldBypassPage()) {
+  init();
+}
 
 function init() {
   ensureStyleInjected();
@@ -83,6 +85,14 @@ function init() {
   if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.onChanged) {
     chrome.storage.onChanged.addListener(handleStorageChange);
   }
+}
+
+function shouldBypassPage() {
+  if (typeof window === 'undefined') {
+    return true;
+  }
+  const host = window.location.hostname || '';
+  return host.endsWith('space.bilibili.com');
 }
 
 function handleStorageChange(changes, areaName) {
