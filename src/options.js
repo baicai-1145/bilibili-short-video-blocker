@@ -3,12 +3,22 @@ const thresholdInput = document.getElementById('threshold-input');
 const rulesContainer = document.getElementById('clip-rules');
 const addRuleButton = document.getElementById('add-rule');
 const ruleTemplate = document.getElementById('clip-rule-template');
+const followEnableInput = document.getElementById('follow-enable');
+const followStatusText = document.getElementById('follow-status-text');
+const followRefreshButton = document.getElementById('follow-refresh');
+const followReloadButton = document.getElementById('follow-reload');
+const followListContainer = document.getElementById('follow-list');
 const status = document.getElementById('status-text');
 
 const shared =
   (typeof window !== 'undefined' && window.BiliShortVideoBlockerShared) || null;
-const storageInfo = shared ? shared.resolveStorageArea() : { area: null };
+const storageInfo = shared ? shared.resolveStorageArea() : { area: null, name: 'sync' };
 const storageArea = storageInfo.area;
+const followStorageInfo =
+  shared && typeof shared.resolveFollowStorageArea === 'function'
+    ? shared.resolveFollowStorageArea()
+    : storageInfo;
+const followStorageArea = followStorageInfo.area;
 
 const DEFAULT_THRESHOLD_SECONDS = shared
   ? shared.DEFAULT_THRESHOLD_SECONDS
@@ -17,6 +27,13 @@ const DEFAULT_THRESHOLD_SECONDS = shared
 const FALLBACK_CLIP_SETTINGS = {
   rules: []
 };
+const FOLLOW_SETTINGS_KEY =
+  shared && shared.FOLLOW_SETTINGS_KEY ? shared.FOLLOW_SETTINGS_KEY : 'followWhitelistSettings';
+const FALLBACK_FOLLOW_SETTINGS = shared
+  ? { ...shared.DEFAULT_FOLLOW_SETTINGS }
+  : { enabled: true, lastFetched: 0, follows: [] };
+
+let currentFollowSettings = getFallbackFollowSettings();
 
 init();
 
@@ -31,19 +48,33 @@ function init() {
       addRuleEditor();
     });
   }
+  if (followRefreshButton) {
+    followRefreshButton.addEventListener('click', handleFollowRefresh);
+  }
+  if (followReloadButton) {
+    followReloadButton.addEventListener('click', () => {
+      refreshFollowSettingsFromStorage(true);
+    });
+  }
+  if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.onChanged) {
+    chrome.storage.onChanged.addListener((changes) => {
+      if (changes[FOLLOW_SETTINGS_KEY] && changes[FOLLOW_SETTINGS_KEY].newValue) {
+        currentFollowSettings = normalizeFollowSettings(changes[FOLLOW_SETTINGS_KEY].newValue);
+        renderFollowSettings(currentFollowSettings);
+      }
+    });
+  }
 }
 
 function loadSettings() {
   if (!shared) {
     thresholdInput.value = String(DEFAULT_THRESHOLD_SECONDS);
     renderRuleEditors(getFallbackClipSettings().rules);
+    renderFollowSettings(getFallbackFollowSettings());
     renderStatus('共享配置未加载，已使用默认值', true);
     return;
   }
-  Promise.all([
-    shared.readThreshold(storageArea),
-    shared.readClipSettings(storageArea)
-  ])
+  Promise.all([shared.readThreshold(storageArea), shared.readClipSettings(storageArea)])
     .then(([rawThreshold, rawClipSettings]) => {
       const value = shared.normalizeThreshold(rawThreshold);
       thresholdInput.value = String(value);
@@ -52,10 +83,13 @@ function loadSettings() {
           ? shared.normalizeClipSettings(rawClipSettings)
           : rawClipSettings;
       renderRuleEditors(normalizedClip?.rules);
+      refreshFollowSettingsFromStorage();
     })
     .catch(() => {
       thresholdInput.value = String(DEFAULT_THRESHOLD_SECONDS);
       renderRuleEditors(getFallbackClipSettings().rules);
+      currentFollowSettings = getFallbackFollowSettings();
+      renderFollowSettings(currentFollowSettings);
       renderStatus('读取存储失败，已使用默认值', true);
     });
 }
@@ -69,9 +103,15 @@ function handleSubmit(event) {
   const thresholdValue = shared.normalizeThreshold(thresholdInput.value);
   const clipRules = gatherRulesFromDom();
   const clipPayload = { rules: clipRules.length ? clipRules : getFallbackClipSettings().rules };
+  const followPayload = {
+    ...currentFollowSettings,
+    enabled: followEnableInput ? followEnableInput.checked : currentFollowSettings.enabled
+  };
+  currentFollowSettings = followPayload;
   Promise.all([
     shared.saveThreshold(thresholdValue, storageArea),
-    shared.saveClipSettings(clipPayload, storageArea)
+    shared.saveClipSettings(clipPayload, storageArea),
+    shared.saveFollowSettings ? shared.saveFollowSettings(followPayload, storageArea) : Promise.resolve()
   ])
     .then(() => {
       renderStatus('设置已保存');
@@ -186,6 +226,13 @@ function getFallbackClipSettings() {
   };
 }
 
+function getFallbackFollowSettings() {
+  if (shared && typeof shared.normalizeFollowSettings === 'function') {
+    return shared.normalizeFollowSettings(FALLBACK_FOLLOW_SETTINGS);
+  }
+  return { ...FALLBACK_FOLLOW_SETTINGS, follows: [] };
+}
+
 function refreshRuleIndexes() {
   if (!rulesContainer) {
     return;
@@ -194,6 +241,88 @@ function refreshRuleIndexes() {
   labels.forEach((node, index) => {
     node.textContent = String(index + 1);
   });
+}
+
+function renderFollowSettings(settings) {
+  if (!settings) {
+    return;
+  }
+  if (followEnableInput) {
+    followEnableInput.checked = Boolean(settings.enabled);
+  }
+  if (followStatusText) {
+    const count = Array.isArray(settings.follows) ? settings.follows.length : 0;
+    const timeText =
+      settings.lastFetched && Number.isFinite(Number(settings.lastFetched))
+        ? new Date(settings.lastFetched).toLocaleString()
+        : '尚未同步';
+    if (!settings.enabled) {
+      followStatusText.textContent = '关注白名单已禁用';
+    } else if (count === 0) {
+      followStatusText.textContent = '已启用，等待同步关注列表';
+    } else {
+      followStatusText.textContent = `已同步 ${count} 个关注（${timeText}）`;
+    }
+  }
+  if (followListContainer) {
+    const follows = Array.isArray(settings.follows) ? settings.follows : [];
+    if (!follows.length) {
+      followListContainer.textContent = '暂无缓存的关注名单';
+    } else {
+      followListContainer.innerHTML = follows
+        .map((entry) => `<span class="follow-list__item">${entry.name || ''}</span>`)
+        .join('');
+    }
+  }
+}
+
+function handleFollowRefresh() {
+  if (!shared || !shared.saveFollowSettings) {
+    renderStatus('共享配置未加载，无法清空关注缓存', true);
+    return;
+  }
+  currentFollowSettings = {
+    ...currentFollowSettings,
+    follows: [],
+    lastFetched: 0
+  };
+  renderFollowSettings(currentFollowSettings);
+  shared
+    .saveFollowSettings(currentFollowSettings, followStorageArea || storageArea)
+    .then(() => {
+      renderStatus('关注缓存已清空，下次访问 B 站页面时会重新同步');
+    })
+    .catch(() => {
+      renderStatus('清空关注缓存失败', true);
+    });
+}
+
+function refreshFollowSettingsFromStorage(showStatusOnError = false) {
+  if (!shared || !shared.readFollowSettings) {
+    currentFollowSettings = getFallbackFollowSettings();
+    renderFollowSettings(currentFollowSettings);
+    return Promise.resolve();
+  }
+  return shared
+    .readFollowSettings(followStorageArea || storageArea)
+    .then((rawFollowSettings) => {
+      currentFollowSettings = normalizeFollowSettings(rawFollowSettings);
+      renderFollowSettings(currentFollowSettings);
+    })
+    .catch(() => {
+      currentFollowSettings = getFallbackFollowSettings();
+      renderFollowSettings(currentFollowSettings);
+      if (showStatusOnError) {
+        renderStatus('刷新关注列表失败', true);
+      }
+    });
+}
+
+function normalizeFollowSettings(rawFollowSettings) {
+  if (typeof shared.normalizeFollowSettings === 'function') {
+    return shared.normalizeFollowSettings(rawFollowSettings);
+  }
+  return rawFollowSettings || getFallbackFollowSettings();
 }
 
 function renderStatus(message, isError = false) {

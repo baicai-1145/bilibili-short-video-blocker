@@ -54,16 +54,22 @@ const shared =
 const {
   DEFAULT_THRESHOLD_SECONDS,
   DEFAULT_CLIP_SETTINGS,
+  DEFAULT_FOLLOW_SETTINGS,
   STORAGE_KEY,
   CLIP_SETTINGS_KEY,
+  FOLLOW_SETTINGS_KEY,
   resolveStorageArea,
   normalizeThreshold,
   readThreshold,
   normalizeClipSettings,
-  readClipSettings
+  readClipSettings,
+  normalizeFollowSettings,
+  readFollowSettings,
+  saveFollowSettings
 } = shared;
 const HIDDEN_CLASS = 'bili-short-video-blocker__hidden';
 const DURATION_PATTERN = /(\d{1,2}:)?\d{1,2}:\d{2}/;
+const FOLLOW_REFRESH_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
 const TITLE_SELECTORS = [
   '.bili-video-card__info--title',
@@ -82,6 +88,8 @@ const AUTHOR_SELECTORS = [
   '.video-card__info .author',
   '.video-card__info .up-name',
   '.video-page-card-small .up-name',
+  '.upname .name',
+  '.up-name .name',
   '.up-name',
   '.author',
   '.name'
@@ -140,7 +148,11 @@ const CARD_CONFIGS = [
 
 const trackedCards = new Set();
 const videoMetadataCache = new Map();
+const blockedVideoCache = new Map(); // key -> { result: boolean, timestamp: number }
 let clipSettings = createClipSettings(DEFAULT_CLIP_SETTINGS);
+let followSettings = createFollowSettings(DEFAULT_FOLLOW_SETTINGS);
+let followFetchPromise = null;
+let followNameSet = buildFollowNameSet(followSettings);
 let thresholdSeconds = DEFAULT_THRESHOLD_SECONDS;
 let storageArea = null;
 let storageAreaName = 'sync';
@@ -157,17 +169,24 @@ function init() {
   storageAreaName = resolvedStorage.name;
   Promise.all([
     readThreshold(storageArea).catch(() => DEFAULT_THRESHOLD_SECONDS),
-    readClipSettings(storageArea).catch(() => DEFAULT_CLIP_SETTINGS)
+    readClipSettings(storageArea).catch(() => DEFAULT_CLIP_SETTINGS),
+    readFollowSettings(storageArea).catch(() => DEFAULT_FOLLOW_SETTINGS)
   ])
-    .then(([rawThreshold, rawClipSettings]) => {
+    .then(([rawThreshold, rawClipSettings, rawFollowSettings]) => {
       thresholdSeconds = normalizeThreshold(rawThreshold);
       clipSettings = createClipSettings(rawClipSettings);
+      followSettings = createFollowSettings(rawFollowSettings);
+      followNameSet = buildFollowNameSet(followSettings);
+      ensureFollowWhitelist();
       scanForCards(document.body);
       observeMutations();
     })
     .catch(() => {
       thresholdSeconds = DEFAULT_THRESHOLD_SECONDS;
       clipSettings = createClipSettings(DEFAULT_CLIP_SETTINGS);
+      followSettings = createFollowSettings(DEFAULT_FOLLOW_SETTINGS);
+      followNameSet = buildFollowNameSet(followSettings);
+      ensureFollowWhitelist();
       scanForCards(document.body);
       observeMutations();
     });
@@ -199,6 +218,11 @@ function handleStorageChange(changes, areaName) {
   if (Object.prototype.hasOwnProperty.call(changes, CLIP_SETTINGS_KEY)) {
     clipSettings = createClipSettings(changes[CLIP_SETTINGS_KEY].newValue);
     shouldRescan = true;
+  }
+  if (Object.prototype.hasOwnProperty.call(changes, FOLLOW_SETTINGS_KEY)) {
+    followSettings = createFollowSettings(changes[FOLLOW_SETTINGS_KEY].newValue);
+    followNameSet = buildFollowNameSet(followSettings);
+    ensureFollowWhitelist(true);
   }
   if (shouldRescan) {
     rescanTrackedCards();
@@ -257,7 +281,9 @@ function registerCard(card, configIndex) {
     return;
   }
   card.dataset.bsrbConfigIndex = String(configIndex);
-  trackedCards.add(card);
+  if (!trackedCards.has(card)) {
+    trackedCards.add(card);
+  }
   evaluateCard(card);
 }
 
@@ -278,6 +304,10 @@ function evaluateCard(card) {
     if (durationSeconds != null) {
       card.dataset.bsrbDurationSeconds = String(durationSeconds);
     }
+  }
+  if (card.dataset.bsrbDecision === 'hide') {
+    applyVisibility(card, durationSeconds, config, true);
+    return;
   }
   const hideByKeywords = shouldHideSliceUpload(card, config, durationSeconds);
   if (hideByKeywords) {
@@ -468,6 +498,29 @@ function shouldHideSliceUpload(card, config, durationSeconds) {
   if (!card || !(card instanceof HTMLElement) || !Number.isFinite(durationSeconds)) {
     return false;
   }
+  const ids = extractVideoIds(card);
+  const decisionCacheKey = ids?.bvid ? `bvid:${ids.bvid}` : ids?.aid ? `aid:${ids.aid}` : null;
+  if (decisionCacheKey && blockedVideoCache.has(decisionCacheKey)) {
+    const cached = blockedVideoCache.get(decisionCacheKey);
+    if (cached && typeof cached.result === 'boolean') {
+      logClipRuleDecision({
+        ruleIndex: -1,
+        durationSeconds,
+        ruleDurationSeconds: durationSeconds,
+        titleText: readExtraTitle(card) || '',
+        tagTexts: readExtraTags(card),
+        keywords: [],
+        authorText: readSingleTextFromSelectors(card, config && config.authorSelectors, AUTHOR_SELECTORS),
+        keywordMatched: true,
+        authorWhitelisted: false,
+        action: cached.result ? 'block:cached' : 'skip:cached'
+      });
+      if (cached.result) {
+        return true;
+      }
+      // fall through if cached result was skip
+    }
+  }
   const rules = Array.isArray(clipSettings?.rules) ? clipSettings.rules : [];
   if (!rules.length) {
     return false;
@@ -500,9 +553,6 @@ function shouldHideSliceUpload(card, config, durationSeconds) {
     if (extraTags.length) {
       tagTexts.push(...extraTags);
     }
-    if (tagTexts.length === 0 && card.dataset.bsrbMetadataLoading !== '1') {
-      requestAdditionalMetadata(card);
-    }
     let authorText = readSingleTextFromSelectors(
       card,
       config && config.authorSelectors,
@@ -512,9 +562,30 @@ function shouldHideSliceUpload(card, config, durationSeconds) {
     if (!authorText && extraAuthor) {
       authorText = extraAuthor;
     }
+    if (tagTexts.length === 0 && card.dataset.bsrbMetadataLoading !== '1') {
+      requestAdditionalMetadata(card);
+    }
     const hasKeyword =
       matchesKeywords(titleText, rule.keywords) ||
       tagTexts.some((tag) => matchesKeywords(tag, rule.keywords));
+    if (isAuthorInFollowWhitelist(authorText)) {
+      logClipRuleDecision({
+        ruleIndex: index,
+        durationSeconds,
+        ruleDurationSeconds: rule.maxDurationSeconds,
+        titleText,
+        tagTexts,
+        keywords: rule.keywords,
+        authorText,
+        keywordMatched: hasKeyword,
+        authorWhitelisted: true,
+        action: 'skip:follow_whitelist'
+      });
+      if (decisionCacheKey) {
+        blockedVideoCache.set(decisionCacheKey, { result: false, timestamp: Date.now() });
+      }
+      return false;
+    }
     if (!hasKeyword) {
       logClipRuleDecision({
         ruleIndex: index,
@@ -528,6 +599,9 @@ function shouldHideSliceUpload(card, config, durationSeconds) {
         authorWhitelisted: false,
         action: 'skip:keyword_miss'
       });
+      if (decisionCacheKey) {
+        blockedVideoCache.set(decisionCacheKey, { result: false, timestamp: Date.now() });
+      }
       continue;
     }
     const authorWhitelisted = matchesOfficialAuthor(authorText, rule.allowedAuthors);
@@ -558,6 +632,9 @@ function shouldHideSliceUpload(card, config, durationSeconds) {
       authorWhitelisted: false,
       action: 'block'
     });
+    if (decisionCacheKey) {
+      blockedVideoCache.set(decisionCacheKey, { result: true, timestamp: Date.now() });
+    }
     return true;
   }
   // 仅在调试时输出无规则信息
@@ -587,6 +664,217 @@ function createClipSettings(rawSettings) {
     }))
     .filter((rule) => rule.keywords.length > 0);
   return { rules };
+}
+
+function createFollowSettings(rawSettings) {
+  const normalizer =
+    typeof normalizeFollowSettings === 'function'
+      ? normalizeFollowSettings
+      : fallbackShared.normalizeFollowSettings;
+  const normalized = normalizer
+    ? normalizer(rawSettings)
+    : { enabled: false, follows: [], lastFetched: 0 };
+  const follows = Array.isArray(normalized.follows)
+    ? normalized.follows
+        .map((entry) => {
+          if (!entry) {
+            return null;
+          }
+          const name = entry.name ? String(entry.name || '').trim() : '';
+          const nameLower = name.toLowerCase();
+          const uid = entry.uid ? Number.parseInt(entry.uid, 10) : null;
+          if (!nameLower) {
+            return null;
+          }
+          return {
+            name,
+            nameLower,
+            uid
+          };
+        })
+        .filter(Boolean)
+    : [];
+  return {
+    enabled: Boolean(normalized.enabled),
+    lastFetched: Number.isFinite(Number(normalized.lastFetched))
+      ? Number(normalized.lastFetched)
+      : 0,
+    follows
+  };
+}
+
+function buildFollowNameSet(settings) {
+  const set = new Set();
+  if (settings && Array.isArray(settings.follows)) {
+    settings.follows.forEach((entry) => {
+      if (entry && entry.nameLower) {
+        set.add(entry.nameLower);
+      }
+    });
+  }
+  return set;
+}
+
+function ensureFollowWhitelist(force = false) {
+  if (!followSettings.enabled) {
+    if (typeof console !== 'undefined' && console.debug) {
+      console.debug('[ShortVideoBlocker][FollowWhitelist]', 'disabled, skip fetch');
+    }
+    return Promise.resolve(followSettings);
+  }
+  if (!force && !shouldFetchFollowWhitelist()) {
+    if (typeof console !== 'undefined' && console.debug) {
+      console.debug('[ShortVideoBlocker][FollowWhitelist]', 'cache valid, skip fetch');
+    }
+    return Promise.resolve(followSettings);
+  }
+  if (followFetchPromise) {
+    return followFetchPromise;
+  }
+  if (typeof console !== 'undefined' && console.debug) {
+    console.debug('[ShortVideoBlocker][FollowWhitelist]', 'start fetching follow list');
+  }
+  followFetchPromise = fetchFollowWhitelist()
+    .then((result) => {
+      if (result) {
+        followSettings = result;
+        followNameSet = buildFollowNameSet(followSettings);
+        if (typeof saveFollowSettings === 'function') {
+          saveFollowSettings(followSettings).catch(() => {});
+        }
+        rescanTrackedCards();
+      }
+      return followSettings;
+    })
+    .finally(() => {
+      followFetchPromise = null;
+    });
+  return followFetchPromise;
+}
+
+function shouldFetchFollowWhitelist() {
+  if (!followSettings.enabled) {
+    return false;
+  }
+  if (!Array.isArray(followSettings.follows) || followSettings.follows.length === 0) {
+    return true;
+  }
+  return Date.now() - followSettings.lastFetched > FOLLOW_REFRESH_INTERVAL_MS;
+}
+
+function fetchFollowWhitelist() {
+  const uid = readCookie('DedeUserID');
+  const csrf = readCookie('bili_jct');
+  if (!followSettings.enabled) {
+    if (typeof console !== 'undefined' && console.debug) {
+      console.debug('[ShortVideoBlocker][FollowWhitelist]', 'disabled, skip fetching follow list');
+    }
+    return Promise.resolve(followSettings);
+  }
+  if (!uid || !csrf) {
+    if (typeof console !== 'undefined' && console.debug) {
+      console.debug(
+        '[ShortVideoBlocker][FollowWhitelist]',
+        'missing cookies (DedeUserID/bili_jct), skip fetching follow list'
+      );
+    }
+    return Promise.resolve(followSettings);
+  }
+  const pageSize = 50;
+  const collected = [];
+  let page = 1;
+
+  const fetchNextPage = () =>
+    fetchFollowPage({ uid, csrf, page, pageSize }).then((list) => {
+      if (Array.isArray(list) && list.length) {
+        collected.push(
+          ...list.map((item) => ({
+            uid: item.mid ? Number.parseInt(item.mid, 10) : null,
+            name: item.uname || item.nickname || '',
+            nameLower: item.uname ? item.uname.toLowerCase() : ''
+          }))
+        );
+        if (list.length === pageSize) {
+          page += 1;
+          return fetchNextPage();
+        }
+      }
+      return null;
+    });
+
+  return fetchNextPage().then(() => {
+    const cleaned = collected.filter((entry) => entry && entry.nameLower);
+    if (typeof console !== 'undefined' && console.debug) {
+      console.debug(
+        '[ShortVideoBlocker][FollowWhitelist]',
+        'fetch complete',
+        `count=${cleaned.length}`
+      );
+    }
+    return {
+      enabled: true,
+      lastFetched: Date.now(),
+      follows: cleaned
+    };
+  });
+}
+
+function fetchFollowPage({ uid, csrf, page, pageSize }) {
+  const params = new URLSearchParams({
+    vmid: String(uid),
+    ps: String(pageSize),
+    pn: String(page),
+    order: 'desc',
+    order_type: 'attention',
+    jsonp: 'jsonp',
+    csrf
+  });
+  return fetch(`https://api.bilibili.com/x/relation/followings?${params.toString()}`, {
+    credentials: 'include'
+  })
+    .then((response) => response.json())
+    .then((json) => {
+      if (!json || json.code !== 0 || !json.data || !Array.isArray(json.data.list)) {
+        if (typeof console !== 'undefined' && console.debug) {
+          console.debug(
+            '[ShortVideoBlocker][FollowWhitelist]',
+            'fetch follow page failed',
+            json && json.message
+          );
+        }
+        return [];
+      }
+      return json.data.list;
+    })
+    .catch((error) => {
+      if (typeof console !== 'undefined' && console.debug) {
+        console.debug(
+          '[ShortVideoBlocker][FollowWhitelist]',
+          'fetch follow page error',
+          error && error.message
+        );
+      }
+      return [];
+    });
+}
+
+function readCookie(name) {
+  if (typeof document === 'undefined' || !document.cookie) {
+    return '';
+  }
+  const match = document.cookie.match(new RegExp(`(?:^|; )${name}=([^;]*)`));
+  return match ? decodeURIComponent(match[1]) : '';
+}
+
+function isAuthorInFollowWhitelist(authorText) {
+  if (!followSettings.enabled || !authorText) {
+    return false;
+  }
+  const normalized = String(authorText || '').trim().toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+  return followNameSet.has(normalized);
 }
 
 function requestAdditionalMetadata(card) {

@@ -30,6 +30,20 @@
           <button type="button" id="add-rule" class="button button--secondary">新增规则</button>
         </section>
 
+        <section class="field-group">
+          <label class="label rule-toggle">
+            <input type="checkbox" id="follow-enable" checked />
+            启用关注白名单
+          </label>
+          <p class="hint">开启后，关注列表中的 UP 不会被屏蔽（需登录并在 B 站页面刷新一次以同步关注）。</p>
+          <p id="follow-status-text" class="follow-status">尚未同步关注列表</p>
+          <div id="follow-list" class="follow-list"></div>
+          <div class="follow-actions">
+            <button type="button" id="follow-reload" class="button button--secondary">刷新关注列表</button>
+            <button type="button" id="follow-refresh" class="button button--secondary">清空关注缓存</button>
+          </div>
+        </section>
+
         <button type="submit" class="button">保存配置</button>
         <p id="status-text" class="status" role="status"></p>
       </form>

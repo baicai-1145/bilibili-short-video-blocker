@@ -3,8 +3,14 @@
   const DEFAULT_CLIP_SETTINGS = {
     rules: []
   };
+  const DEFAULT_FOLLOW_SETTINGS = {
+    enabled: true,
+    lastFetched: 0,
+    follows: []
+  };
   const STORAGE_KEY = 'thresholdSeconds';
   const CLIP_SETTINGS_KEY = 'clipFilterSettings';
+  const FOLLOW_SETTINGS_KEY = 'followWhitelistSettings';
   const DEFAULT_CLIP_RULE = {
     enabled: true,
     keywords: [],
@@ -27,6 +33,13 @@
       return { area: chrome.storage.local, name: 'local' };
     }
     return { area: null, name: 'sync' };
+  }
+
+  function resolveFollowStorageArea() {
+    if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
+      return { area: chrome.storage.local, name: 'local' };
+    }
+    return resolveStorageArea();
   }
 
   function normalizeThreshold(value) {
@@ -81,6 +94,36 @@
     };
   }
 
+  function normalizeFollowSettings(value) {
+    if (!value || typeof value !== 'object') {
+      return { ...DEFAULT_FOLLOW_SETTINGS, follows: [] };
+    }
+    const follows = Array.isArray(value.follows)
+      ? value.follows
+          .map((entry) => {
+            if (!entry) {
+              return null;
+            }
+            if (typeof entry === 'string') {
+              return {
+                name: entry.trim(),
+                uid: null
+              };
+            }
+            return {
+              name: entry.name ? String(entry.name || '').trim() : '',
+              uid: entry.uid ? Number.parseInt(entry.uid, 10) : null
+            };
+          })
+          .filter((entry) => entry && entry.name)
+      : [];
+    return {
+      enabled: Boolean(value.enabled),
+      lastFetched: Number.isFinite(Number(value.lastFetched)) ? Number(value.lastFetched) : 0,
+      follows
+    };
+  }
+
   function readThreshold(storageArea = resolveStorageArea().area) {
     return new Promise((resolve) => {
       if (!storageArea) {
@@ -111,6 +154,22 @@
         resolve(result[CLIP_SETTINGS_KEY]);
       });
     }).then(normalizeClipSettings);
+  }
+
+  function readFollowSettings(storageArea = resolveFollowStorageArea().area) {
+    return new Promise((resolve) => {
+      if (!storageArea) {
+        resolve({ ...DEFAULT_FOLLOW_SETTINGS });
+        return;
+      }
+      storageArea.get({ [FOLLOW_SETTINGS_KEY]: DEFAULT_FOLLOW_SETTINGS }, (result) => {
+        if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.lastError) {
+          resolve({ ...DEFAULT_FOLLOW_SETTINGS });
+          return;
+        }
+        resolve(result[FOLLOW_SETTINGS_KEY]);
+      });
+    }).then(normalizeFollowSettings);
   }
 
   function saveThreshold(value, storageArea = resolveStorageArea().area) {
@@ -145,18 +204,40 @@
     });
   }
 
+  function saveFollowSettings(settings, storageArea = resolveFollowStorageArea().area) {
+    return new Promise((resolve, reject) => {
+      if (!storageArea) {
+        reject(new Error('Storage area is unavailable in current context.'));
+        return;
+      }
+      storageArea.set({ [FOLLOW_SETTINGS_KEY]: normalizeFollowSettings(settings) }, () => {
+        if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.lastError) {
+          reject(new Error(chrome.runtime.lastError.message || 'Failed to save follow settings.'));
+          return;
+        }
+        resolve();
+      });
+    });
+  }
+
   const shared = {
     DEFAULT_THRESHOLD_SECONDS,
     DEFAULT_CLIP_SETTINGS,
+    DEFAULT_FOLLOW_SETTINGS,
     STORAGE_KEY,
     CLIP_SETTINGS_KEY,
+    FOLLOW_SETTINGS_KEY,
     resolveStorageArea,
+    resolveFollowStorageArea,
     normalizeThreshold,
     readThreshold,
     saveThreshold,
     normalizeClipSettings,
     readClipSettings,
-    saveClipSettings
+    saveClipSettings,
+    normalizeFollowSettings,
+    readFollowSettings,
+    saveFollowSettings
   };
 
   if (typeof window !== 'undefined') {

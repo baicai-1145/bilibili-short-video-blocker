@@ -95,6 +95,30 @@ body {
   color: #888;
 }
 
+.follow-status {
+  margin: 0;
+  font-size: 12px;
+  color: #555;
+}
+
+.follow-list {
+  border: 1px solid #e0e0e0;
+  border-radius: 4px;
+  padding: 8px;
+  max-height: 160px;
+  overflow-y: auto;
+  font-size: 13px;
+  color: #333;
+}
+
+.follow-list__item {
+  display: inline-block;
+  background: #f1f1f5;
+  border-radius: 3px;
+  padding: 2px 6px;
+  margin: 2px;
+}
+
 .status {
   min-height: 20px;
   margin: 0;
@@ -159,4 +183,9 @@ body {
 .popup-title {
   font-size: 18px;
   margin-bottom: 8px;
+}
+.follow-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
 }
