@@ -10,20 +10,59 @@
     <main class="container popup-container">
       <h1 class="title popup-title">过滤阈值</h1>
       <form id="threshold-form" class="form" autocomplete="off">
-        <label for="threshold-input" class="label">隐藏时长低于（秒）：</label>
-        <input
-          id="threshold-input"
-          class="input"
-          type="number"
-          min="0"
-          step="1"
-          required
-        />
-        <p class="hint">0 表示暂停过滤。</p>
+        <section class="field-group">
+          <label for="threshold-input" class="label">隐藏时长低于（秒）：</label>
+          <input
+            id="threshold-input"
+            class="input"
+            type="number"
+            min="0"
+            step="1"
+            required
+          />
+        </section>
+
+        <section class="field-group">
+          <div class="label">关键词切片过滤规则</div>
+          <div id="clip-rules" class="rules-container"></div>
+          <button type="button" id="add-rule" class="button button--secondary">新增规则</button>
+        </section>
+
         <button type="submit" class="button">保存</button>
         <p id="status-text" class="status" role="status"></p>
       </form>
     </main>
+    <template id="clip-rule-template">
+      <div class="rule-card">
+        <div class="rule-card__header">
+          <span>规则 <span data-rule-index></span></span>
+          <button type="button" class="rule-remove" data-action="remove-rule">删除</button>
+        </div>
+        <label class="label rule-toggle">
+          <input type="checkbox" data-field="enabled" checked />
+          启用此规则
+        </label>
+        <label class="label">
+          时长上限（分钟）：
+          <input
+            class="input"
+            type="number"
+            min="1"
+            step="1"
+            data-field="duration"
+            required
+          />
+        </label>
+        <label class="label">
+          关键词（每行一个）：
+          <textarea class="textarea" rows="3" data-field="keywords"></textarea>
+        </label>
+        <label class="label">
+          白名单 UP（每行一个）：
+          <textarea class="textarea" rows="2" data-field="authors"></textarea>
+        </label>
+      </div>
+    </template>
     <script src="src/shared.js"></script>
     <script src="src/options.js"></script>
   </body>
