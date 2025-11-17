@@ -4,8 +4,20 @@ const fallbackShared = {
   DEFAULT_CLIP_SETTINGS: { rules: [] },
   STORAGE_KEY: 'thresholdSeconds',
   CLIP_SETTINGS_KEY: 'clipFilterSettings',
+  readDecisionRecords() {
+    return Promise.resolve([]);
+  },
+  saveDecisionRecord() {
+    return Promise.resolve([]);
+  },
+  clearDecisionRecords() {
+    return Promise.resolve();
+  },
   resolveStorageArea() {
     return { area: null, name: 'sync' };
+  },
+  resolveFollowStorageArea() {
+    return { area: null, name: 'local' };
   },
   normalizeThreshold(value) {
     const numeric = Number.parseInt(value, 10);
@@ -59,17 +71,23 @@ const {
   CLIP_SETTINGS_KEY,
   FOLLOW_SETTINGS_KEY,
   resolveStorageArea,
+  resolveFollowStorageArea,
   normalizeThreshold,
   readThreshold,
   normalizeClipSettings,
   readClipSettings,
   normalizeFollowSettings,
   readFollowSettings,
-  saveFollowSettings
+  saveFollowSettings,
+  readDecisionRecords: sharedReadDecisionRecords,
+  saveDecisionRecord: sharedSaveDecisionRecord,
+  clearDecisionRecords: sharedClearDecisionRecords
 } = shared;
 const HIDDEN_CLASS = 'bili-short-video-blocker__hidden';
 const DURATION_PATTERN = /(\d{1,2}:)?\d{1,2}:\d{2}/;
 const FOLLOW_REFRESH_INTERVAL_MS = 6 * 60 * 60 * 1000;
+const DECISION_RECORDS_KEY = 'decisionRecords';
+const DECISION_RECORD_LIMIT = 200;
 
 const TITLE_SELECTORS = [
   '.bili-video-card__info--title',
@@ -149,6 +167,8 @@ const CARD_CONFIGS = [
 const trackedCards = new Set();
 const videoMetadataCache = new Map();
 const blockedVideoCache = new Map(); // key -> { result: boolean, timestamp: number }
+const decisionFinalCache = new Map(); // key -> { result: 'block' | 'allow', timestamp }
+let decisionRecords = [];
 let clipSettings = createClipSettings(DEFAULT_CLIP_SETTINGS);
 let followSettings = createFollowSettings(DEFAULT_FOLLOW_SETTINGS);
 let followFetchPromise = null;
@@ -157,6 +177,103 @@ let thresholdSeconds = DEFAULT_THRESHOLD_SECONDS;
 let storageArea = null;
 let storageAreaName = 'sync';
 let scanScheduled = false;
+let decisionStorageArea = null;
+
+function readDecisionRecordsFromStorage() {
+  const decisionStorage = decisionStorageArea || resolveFollowStorageArea().area || resolveStorageArea().area;
+  if (typeof sharedReadDecisionRecords === 'function') {
+    return sharedReadDecisionRecords(decisionStorage);
+  }
+  return Promise.resolve([]);
+}
+
+function hydrateBlockedCacheFromRecords(records, reset = false) {
+  if (reset) {
+    blockedVideoCache.clear();
+    decisionFinalCache.clear();
+  }
+  if (!Array.isArray(records)) {
+    return;
+  }
+  records.forEach((record) => {
+    if (!record || !record.id) {
+      return;
+    }
+    if (record.result === 'block') {
+      blockedVideoCache.set(record.id, {
+        result: true,
+        timestamp: Number.isFinite(Number(record.timestamp)) ? Number(record.timestamp) : Date.now()
+      });
+      decisionFinalCache.set(record.id, { result: 'block', timestamp: Date.now() });
+    } else if (record.result === 'allow') {
+      decisionFinalCache.set(record.id, { result: 'allow', timestamp: Date.now() });
+    }
+  });
+}
+
+function recordDecision(entry) {
+  if (!entry || !entry.id) {
+    return;
+  }
+  const normalized = {
+    id: entry.id,
+    title: String(entry.title || '').trim(),
+    author: String(entry.author || '').trim(),
+    durationSeconds: Number.isFinite(Number(entry.durationSeconds))
+      ? Number(entry.durationSeconds)
+      : null,
+    result: entry.result === 'allow' ? 'allow' : 'block',
+    reason: String(entry.reason || '').trim(),
+    timestamp: Number.isFinite(Number(entry.timestamp)) ? Number(entry.timestamp) : Date.now()
+  };
+  decisionRecords = [
+    normalized,
+    ...decisionRecords.filter(
+      (item) => !(item && item.id === normalized.id && item.result === normalized.result)
+    )
+  ].slice(0, DECISION_RECORD_LIMIT);
+  if (normalized.result === 'block') {
+    blockedVideoCache.set(normalized.id, { result: true, timestamp: normalized.timestamp });
+    decisionFinalCache.set(normalized.id, { result: 'block', timestamp: normalized.timestamp });
+  } else if (blockedVideoCache.has(normalized.id)) {
+    const stillBlocked = decisionRecords.some(
+      (item) => item && item.id === normalized.id && item.result === 'block'
+    );
+    if (!stillBlocked) {
+      blockedVideoCache.delete(normalized.id);
+    }
+    decisionFinalCache.set(normalized.id, { result: 'allow', timestamp: normalized.timestamp });
+  } else {
+    decisionFinalCache.set(normalized.id, { result: 'allow', timestamp: normalized.timestamp });
+  }
+  if (typeof sharedSaveDecisionRecord === 'function') {
+    const area = decisionStorageArea || resolveFollowStorageArea().area || storageArea;
+    sharedSaveDecisionRecord(normalized, area)
+      .then((records) => {
+        if (Array.isArray(records)) {
+          decisionRecords = records;
+          hydrateBlockedCacheFromRecords(decisionRecords, true);
+        }
+      })
+      .catch(() => {});
+  }
+}
+
+function readCardTitle(card, config) {
+  let title = readSingleTextFromSelectors(card, config && config.titleSelectors, TITLE_SELECTORS);
+  if (!title) {
+    title = readExtraTitle(card);
+  }
+  return title || '';
+}
+
+function readCardAuthor(card, config) {
+  let author = readSingleTextFromSelectors(card, config && config.authorSelectors, AUTHOR_SELECTORS);
+  if (!author) {
+    author = readExtraAuthor(card);
+  }
+  return author || '';
+}
 
 if (!shouldBypassPage()) {
   init();
@@ -167,16 +284,21 @@ function init() {
   const resolvedStorage = resolveStorageArea();
   storageArea = resolvedStorage.area;
   storageAreaName = resolvedStorage.name;
+  const followStorage = resolveFollowStorageArea();
+  decisionStorageArea = followStorage.area || storageArea;
   Promise.all([
     readThreshold(storageArea).catch(() => DEFAULT_THRESHOLD_SECONDS),
     readClipSettings(storageArea).catch(() => DEFAULT_CLIP_SETTINGS),
-    readFollowSettings(storageArea).catch(() => DEFAULT_FOLLOW_SETTINGS)
+    readFollowSettings(decisionStorageArea || storageArea).catch(() => DEFAULT_FOLLOW_SETTINGS),
+    readDecisionRecordsFromStorage().catch(() => [])
   ])
-    .then(([rawThreshold, rawClipSettings, rawFollowSettings]) => {
+    .then(([rawThreshold, rawClipSettings, rawFollowSettings, records]) => {
       thresholdSeconds = normalizeThreshold(rawThreshold);
       clipSettings = createClipSettings(rawClipSettings);
       followSettings = createFollowSettings(rawFollowSettings);
       followNameSet = buildFollowNameSet(followSettings);
+      decisionRecords = Array.isArray(records) ? records : [];
+      hydrateBlockedCacheFromRecords(decisionRecords, true);
       ensureFollowWhitelist();
       scanForCards(document.body);
       observeMutations();
@@ -281,8 +403,14 @@ function registerCard(card, configIndex) {
     return;
   }
   card.dataset.bsrbConfigIndex = String(configIndex);
-  if (!trackedCards.has(card)) {
+  const alreadyTracked = trackedCards.has(card);
+  if (!alreadyTracked) {
     trackedCards.add(card);
+  }
+  const hasStoredDuration = card.dataset.bsrbDurationSeconds != null && card.dataset.bsrbDurationSeconds !== '';
+  const alreadyEvaluated = card.dataset.bsrbEvaluated === '1';
+  if (alreadyTracked && alreadyEvaluated && hasStoredDuration) {
+    return;
   }
   evaluateCard(card);
 }
@@ -298,23 +426,39 @@ function evaluateCard(card) {
     return;
   }
   const ids = extractVideoIds(card);
-  const decisionCacheKey = ids?.bvid ? `bvid:${ids.bvid}` : ids?.aid ? `aid:${ids.aid}` : null;
+  const decisionCacheKey = buildDecisionCacheKey(ids);
+  const titleText = readCardTitle(card, config);
+  const authorText = readCardAuthor(card, config);
+  let durationSeconds = readStoredDuration(card);
+
+  if (decisionCacheKey && decisionFinalCache.has(decisionCacheKey)) {
+    const entry = decisionFinalCache.get(decisionCacheKey);
+    const forceHide = entry && entry.result === 'block';
+    applyVisibility(card, durationSeconds, config, forceHide);
+    return;
+  }
   if (decisionCacheKey && blockedVideoCache.has(decisionCacheKey)) {
     const cached = blockedVideoCache.get(decisionCacheKey);
     if (cached && cached.result === true) {
-      applyVisibility(card, readStoredDuration(card), config, true);
+      applyVisibility(card, durationSeconds, config, true);
+      decisionFinalCache.set(decisionCacheKey, { result: 'block', timestamp: cached.timestamp || Date.now() });
       return;
     }
   }
 
   // 1) 关注白名单：先从 DOM/补充字段取作者，命中白名单直接放行并缓存
-  const authorText =
-    readSingleTextFromSelectors(card, config && config.authorSelectors, AUTHOR_SELECTORS) ||
-    readExtraAuthor(card);
   if (isAuthorInFollowWhitelist(authorText)) {
+    recordDecision({
+      id: decisionCacheKey,
+      title: titleText,
+      author: authorText,
+      durationSeconds,
+      result: 'allow',
+      reason: 'follow_whitelist'
+    });
     logClipRuleDecision({
       ruleIndex: -1,
-      durationSeconds: readStoredDuration(card),
+      durationSeconds,
       ruleDurationSeconds: 0,
       titleText: '',
       tagTexts: [],
@@ -328,7 +472,6 @@ function evaluateCard(card) {
     return;
   }
 
-  let durationSeconds = readStoredDuration(card);
   if (durationSeconds == null) {
     const durationText = extractDurationText(card, config);
     durationSeconds = parseDurationToSeconds(durationText);
@@ -345,13 +488,23 @@ function evaluateCard(card) {
     durationSeconds < thresholdSeconds
   ) {
     if (decisionCacheKey) {
-      blockedVideoCache.set(decisionCacheKey, { result: true, timestamp: Date.now() });
+      recordDecision({
+        id: decisionCacheKey,
+        title: titleText,
+        author: authorText,
+        durationSeconds,
+        result: 'block',
+        reason: 'duration'
+      });
     }
     applyVisibility(card, durationSeconds, config, true);
     return;
   }
 
-  const hideByKeywords = shouldHideSliceUpload(card, config, durationSeconds);
+  const hideByKeywords = shouldHideSliceUpload(card, config, durationSeconds, decisionCacheKey, {
+    titleText,
+    authorText
+  });
   if (hideByKeywords) {
     card.dataset.bsrbSliceFilter = 'keyword-hit';
   } else {
@@ -360,6 +513,7 @@ function evaluateCard(card) {
   if (decisionCacheKey && hideByKeywords) {
     blockedVideoCache.set(decisionCacheKey, { result: true, timestamp: Date.now() });
   }
+  card.dataset.bsrbEvaluated = '1';
   applyVisibility(card, durationSeconds, config, hideByKeywords);
 }
 
@@ -539,7 +693,7 @@ function logClipRuleDecision(details) {
   );
 }
 
-function shouldHideSliceUpload(card, config, durationSeconds) {
+function shouldHideSliceUpload(card, config, durationSeconds, decisionCacheKey, hints = {}) {
   if (!card || !(card instanceof HTMLElement) || !Number.isFinite(durationSeconds)) {
     return false;
   }
@@ -547,6 +701,8 @@ function shouldHideSliceUpload(card, config, durationSeconds) {
   if (!rules.length) {
     return false;
   }
+  const hintedTitle = hints && typeof hints === 'object' ? hints.titleText : '';
+  const hintedAuthor = hints && typeof hints === 'object' ? hints.authorText : '';
   for (let index = 0; index < rules.length; index += 1) {
     const rule = rules[index];
     if (
@@ -557,11 +713,8 @@ function shouldHideSliceUpload(card, config, durationSeconds) {
     ) {
       continue;
     }
-    let titleText = readSingleTextFromSelectors(
-      card,
-      config && config.titleSelectors,
-      TITLE_SELECTORS
-    );
+    let titleText = hintedTitle ||
+      readSingleTextFromSelectors(card, config && config.titleSelectors, TITLE_SELECTORS);
     const tagTexts = readMultipleTextsFromSelectors(
       card,
       config && config.tagSelectors,
@@ -575,11 +728,8 @@ function shouldHideSliceUpload(card, config, durationSeconds) {
     if (extraTags.length) {
       tagTexts.push(...extraTags);
     }
-    let authorText = readSingleTextFromSelectors(
-      card,
-      config && config.authorSelectors,
-      AUTHOR_SELECTORS
-    );
+    let authorText = hintedAuthor ||
+      readSingleTextFromSelectors(card, config && config.authorSelectors, AUTHOR_SELECTORS);
     const extraAuthor = readExtraAuthor(card);
     if (!authorText && extraAuthor) {
       authorText = extraAuthor;
@@ -603,6 +753,16 @@ function shouldHideSliceUpload(card, config, durationSeconds) {
         authorWhitelisted: true,
         action: 'skip:follow_whitelist'
       });
+      if (decisionCacheKey) {
+        recordDecision({
+          id: decisionCacheKey,
+          title: titleText,
+          author: authorText,
+          durationSeconds,
+          result: 'allow',
+          reason: 'follow_whitelist'
+        });
+      }
       return false;
     }
     if (!hasKeyword) {
@@ -634,6 +794,16 @@ function shouldHideSliceUpload(card, config, durationSeconds) {
         authorWhitelisted: true,
         action: 'skip:white_list'
       });
+      if (decisionCacheKey) {
+        recordDecision({
+          id: decisionCacheKey,
+          title: titleText,
+          author: authorText,
+          durationSeconds,
+          result: 'allow',
+          reason: 'rule_author'
+        });
+      }
       continue;
     }
     logClipRuleDecision({
@@ -649,7 +819,14 @@ function shouldHideSliceUpload(card, config, durationSeconds) {
       action: 'block'
     });
     if (decisionCacheKey) {
-      blockedVideoCache.set(decisionCacheKey, { result: true, timestamp: Date.now() });
+      recordDecision({
+        id: decisionCacheKey,
+        title: titleText,
+        author: authorText,
+        durationSeconds,
+        result: 'block',
+        reason: 'keyword'
+      });
     }
     return true;
   }
@@ -970,6 +1147,19 @@ function extractVideoIds(card) {
   const avMatch = href.match(/av(\\d+)/i);
   if (avMatch) {
     return { aid: Number.parseInt(avMatch[1], 10) };
+  }
+  return null;
+}
+
+function buildDecisionCacheKey(ids) {
+  if (!ids) {
+    return null;
+  }
+  if (ids.bvid) {
+    return `bvid:${ids.bvid}`;
+  }
+  if (Number.isFinite(ids.aid)) {
+    return `aid:${ids.aid}`;
   }
   return null;
 }

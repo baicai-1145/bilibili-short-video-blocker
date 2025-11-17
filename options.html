@@ -44,6 +44,25 @@
           </div>
         </section>
 
+        <section class="field-group">
+          <div class="label">缓存的决策</div>
+          <p class="hint">展示最近的屏蔽/放行记录（最多 200 条），便于核对与调试。</p>
+          <div class="decision-actions">
+            <button type="button" id="decision-reload" class="button button--secondary">刷新记录</button>
+            <button type="button" id="decision-clear" class="button button--secondary">清空记录</button>
+          </div>
+          <div class="decision-lists">
+            <div>
+              <div class="label">屏蔽记录</div>
+              <div id="decision-block-list" class="decision-list"></div>
+            </div>
+            <div>
+              <div class="label">放行记录</div>
+              <div id="decision-allow-list" class="decision-list"></div>
+            </div>
+          </div>
+        </section>
+
         <button type="submit" class="button">保存配置</button>
         <p id="status-text" class="status" role="status"></p>
       </form>

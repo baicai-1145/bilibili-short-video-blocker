@@ -8,6 +8,8 @@
     lastFetched: 0,
     follows: []
   };
+  const DECISION_RECORDS_KEY = 'decisionRecords';
+  const DECISION_RECORD_LIMIT = 200;
   const STORAGE_KEY = 'thresholdSeconds';
   const CLIP_SETTINGS_KEY = 'clipFilterSettings';
   const FOLLOW_SETTINGS_KEY = 'followWhitelistSettings';
@@ -220,6 +222,103 @@
     });
   }
 
+  function normalizeDecisionRecord(record) {
+    if (!record || typeof record !== 'object') {
+      return null;
+    }
+    const id = String(record.id || '').trim();
+    if (!id) {
+      return null;
+    }
+    const title = String(record.title || '').trim();
+    const author = String(record.author || '').trim();
+    const reason = String(record.reason || '').trim();
+    const result = record.result === 'allow' ? 'allow' : 'block';
+    const timestamp = Number.isFinite(Number(record.timestamp))
+      ? Number(record.timestamp)
+      : Date.now();
+    const durationSeconds = Number.isFinite(Number(record.durationSeconds))
+      ? Number(record.durationSeconds)
+      : null;
+    return { id, title, author, reason, result, timestamp, durationSeconds };
+  }
+
+  function readDecisionRecords(storageArea = resolveFollowStorageArea().area) {
+    return new Promise((resolve) => {
+      if (!storageArea) {
+        resolve([]);
+        return;
+      }
+      storageArea.get({ [DECISION_RECORDS_KEY]: [] }, (result) => {
+        if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.lastError) {
+          resolve([]);
+          return;
+        }
+        const list = Array.isArray(result[DECISION_RECORDS_KEY])
+          ? result[DECISION_RECORDS_KEY]
+          : [];
+        resolve(list);
+      });
+    }).then((list) => list.map((item) => normalizeDecisionRecord(item)).filter(Boolean));
+  }
+
+  function saveDecisionRecord(record, storageArea = resolveFollowStorageArea().area) {
+    const normalized = normalizeDecisionRecord(record);
+    if (!normalized) {
+      return Promise.resolve([]);
+    }
+    return new Promise((resolve, reject) => {
+      if (!storageArea) {
+        resolve([]);
+        return;
+      }
+      storageArea.get({ [DECISION_RECORDS_KEY]: [] }, (result) => {
+        if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.lastError) {
+          reject(new Error(chrome.runtime.lastError.message || 'Failed to read decision records.'));
+          return;
+        }
+        const list = Array.isArray(result[DECISION_RECORDS_KEY])
+          ? result[DECISION_RECORDS_KEY]
+          : [];
+        const combined = [normalized, ...list]
+          .filter((item) => item && item.id)
+          .reduce((acc, item) => {
+            const key = `${item.id}:${item.result}`;
+            if (!acc.has(key)) {
+              acc.set(key, item);
+            }
+            return acc;
+          }, new Map());
+        const next = Array.from(combined.values())
+          .sort((a, b) => b.timestamp - a.timestamp)
+          .slice(0, DECISION_RECORD_LIMIT);
+        storageArea.set({ [DECISION_RECORDS_KEY]: next }, () => {
+          if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.lastError) {
+            reject(new Error(chrome.runtime.lastError.message || 'Failed to save decision record.'));
+            return;
+          }
+          resolve(next);
+        });
+      });
+    });
+  }
+
+  function clearDecisionRecords(storageArea = resolveFollowStorageArea().area) {
+    return new Promise((resolve, reject) => {
+      if (!storageArea) {
+        resolve();
+        return;
+      }
+      storageArea.set({ [DECISION_RECORDS_KEY]: [] }, () => {
+        if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.lastError) {
+          reject(new Error(chrome.runtime.lastError.message || 'Failed to clear decision records.'));
+          return;
+        }
+        resolve();
+      });
+    });
+  }
+
   const shared = {
     DEFAULT_THRESHOLD_SECONDS,
     DEFAULT_CLIP_SETTINGS,
@@ -237,7 +336,12 @@
     saveClipSettings,
     normalizeFollowSettings,
     readFollowSettings,
-    saveFollowSettings
+    saveFollowSettings,
+    readDecisionRecords,
+    saveDecisionRecord,
+    clearDecisionRecords,
+    DECISION_RECORDS_KEY,
+    DECISION_RECORD_LIMIT
   };
 
   if (typeof window !== 'undefined') {

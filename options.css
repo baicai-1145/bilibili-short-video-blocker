@@ -189,3 +189,45 @@ body {
   gap: 8px;
   flex-wrap: wrap;
 }
+
+.decision-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.decision-lists {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+}
+
+.decision-list {
+  min-height: 80px;
+  max-height: 200px;
+  overflow-y: auto;
+  border: 1px solid #e0e0e0;
+  border-radius: 4px;
+  padding: 8px;
+  font-size: 12px;
+  background: #fafafa;
+}
+
+.decision-item {
+  border-bottom: 1px solid rgba(0, 0, 0, 0.05);
+  padding: 4px 0;
+}
+
+.decision-item:last-child {
+  border-bottom: none;
+}
+
+.decision-item__title {
+  font-weight: 600;
+  color: #333;
+}
+
+.decision-item__meta {
+  color: #666;
+  font-size: 11px;
+}

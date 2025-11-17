@@ -8,6 +8,10 @@ const followStatusText = document.getElementById('follow-status-text');
 const followRefreshButton = document.getElementById('follow-refresh');
 const followReloadButton = document.getElementById('follow-reload');
 const followListContainer = document.getElementById('follow-list');
+const decisionReloadButton = document.getElementById('decision-reload');
+const decisionClearButton = document.getElementById('decision-clear');
+const decisionBlockList = document.getElementById('decision-block-list');
+const decisionAllowList = document.getElementById('decision-allow-list');
 const status = document.getElementById('status-text');
 
 const shared =
@@ -29,11 +33,14 @@ const FALLBACK_CLIP_SETTINGS = {
 };
 const FOLLOW_SETTINGS_KEY =
   shared && shared.FOLLOW_SETTINGS_KEY ? shared.FOLLOW_SETTINGS_KEY : 'followWhitelistSettings';
+const DECISION_RECORDS_KEY =
+  shared && shared.DECISION_RECORDS_KEY ? shared.DECISION_RECORDS_KEY : 'decisionRecords';
 const FALLBACK_FOLLOW_SETTINGS = shared
   ? { ...shared.DEFAULT_FOLLOW_SETTINGS }
   : { enabled: true, lastFetched: 0, follows: [] };
 
 let currentFollowSettings = getFallbackFollowSettings();
+let latestDecisionRecords = { block: [], allow: [] };
 
 init();
 
@@ -56,11 +63,22 @@ function init() {
       refreshFollowSettingsFromStorage(true);
     });
   }
+  if (decisionReloadButton) {
+    decisionReloadButton.addEventListener('click', () => {
+      refreshDecisionRecords(true);
+    });
+  }
+  if (decisionClearButton) {
+    decisionClearButton.addEventListener('click', handleDecisionClear);
+  }
   if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.onChanged) {
     chrome.storage.onChanged.addListener((changes) => {
       if (changes[FOLLOW_SETTINGS_KEY] && changes[FOLLOW_SETTINGS_KEY].newValue) {
         currentFollowSettings = normalizeFollowSettings(changes[FOLLOW_SETTINGS_KEY].newValue);
         renderFollowSettings(currentFollowSettings);
+      }
+      if (changes[DECISION_RECORDS_KEY]) {
+        refreshDecisionRecords();
       }
     });
   }
@@ -71,6 +89,7 @@ function loadSettings() {
     thresholdInput.value = String(DEFAULT_THRESHOLD_SECONDS);
     renderRuleEditors(getFallbackClipSettings().rules);
     renderFollowSettings(getFallbackFollowSettings());
+    renderDecisionRecords([], []);
     renderStatus('共享配置未加载，已使用默认值', true);
     return;
   }
@@ -84,12 +103,14 @@ function loadSettings() {
           : rawClipSettings;
       renderRuleEditors(normalizedClip?.rules);
       refreshFollowSettingsFromStorage();
+      refreshDecisionRecords();
     })
     .catch(() => {
       thresholdInput.value = String(DEFAULT_THRESHOLD_SECONDS);
       renderRuleEditors(getFallbackClipSettings().rules);
       currentFollowSettings = getFallbackFollowSettings();
       renderFollowSettings(currentFollowSettings);
+      renderDecisionRecords([], []);
       renderStatus('读取存储失败，已使用默认值', true);
     });
 }
@@ -274,6 +295,95 @@ function renderFollowSettings(settings) {
         .join('');
     }
   }
+}
+
+function refreshDecisionRecords(showStatusOnError = false) {
+  if (!shared || typeof shared.readDecisionRecords !== 'function') {
+    renderDecisionRecords([], []);
+    return Promise.resolve();
+  }
+  const area = followStorageArea || storageArea;
+  return shared
+    .readDecisionRecords(area)
+    .then((records) => {
+      const block = [];
+      const allow = [];
+      (records || []).forEach((record) => {
+        if (record && record.result === 'allow') {
+          allow.push(record);
+        } else if (record) {
+          block.push(record);
+        }
+      });
+      latestDecisionRecords = { block, allow };
+      renderDecisionRecords(block, allow);
+    })
+    .catch(() => {
+      if (showStatusOnError) {
+        renderStatus('读取决策记录失败', true);
+      }
+      renderDecisionRecords([], []);
+    });
+}
+
+function renderDecisionRecords(blockList, allowList) {
+  renderDecisionList(decisionBlockList, blockList, '暂无屏蔽缓存');
+  renderDecisionList(decisionAllowList, allowList, '暂无放行缓存');
+}
+
+function renderDecisionList(container, records, emptyText) {
+  if (!container) {
+    return;
+  }
+  const list = Array.isArray(records) ? records : [];
+  if (!list.length) {
+    container.textContent = emptyText;
+    return;
+  }
+  container.innerHTML = list
+    .map((record) => {
+      const timeText = record.timestamp
+        ? new Date(record.timestamp).toLocaleString()
+        : '';
+      const durationText = Number.isFinite(Number(record.durationSeconds))
+        ? `${Math.round(record.durationSeconds)}s`
+        : '未知时长';
+      const reasonText = record.reason ? `原因：${record.reason}` : '';
+      const reasonLabel = reasonText || '原因：-';
+      return `
+        <div class="decision-item">
+          <div class="decision-item__title">${escapeHtml(record.title || '未命名视频')}</div>
+          <div class="decision-item__meta">UP：${escapeHtml(record.author || '未知')} ｜ 时长：${durationText}</div>
+          <div class="decision-item__meta">${escapeHtml(reasonLabel)}${timeText ? ` ｜ ${escapeHtml(timeText)}` : ''}</div>
+        </div>
+      `;
+    })
+    .join('');
+}
+
+function escapeHtml(value) {
+  return String(value || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+function handleDecisionClear() {
+  if (!shared || typeof shared.clearDecisionRecords !== 'function') {
+    renderStatus('当前环境不支持清空决策记录', true);
+    return;
+  }
+  const area = followStorageArea || storageArea;
+  shared
+    .clearDecisionRecords(area)
+    .then(() => {
+      latestDecisionRecords = { block: [], allow: [] };
+      renderDecisionRecords([], []);
+      renderStatus('决策记录已清空');
+    })
+    .catch(() => {
+      renderStatus('清空决策记录失败', true);
+    });
 }
 
 function handleFollowRefresh() {
