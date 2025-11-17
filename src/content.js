@@ -297,6 +297,37 @@ function evaluateCard(card) {
   if (!config) {
     return;
   }
+  const ids = extractVideoIds(card);
+  const decisionCacheKey = ids?.bvid ? `bvid:${ids.bvid}` : ids?.aid ? `aid:${ids.aid}` : null;
+  if (decisionCacheKey && blockedVideoCache.has(decisionCacheKey)) {
+    const cached = blockedVideoCache.get(decisionCacheKey);
+    if (cached && cached.result === true) {
+      applyVisibility(card, readStoredDuration(card), config, true);
+      return;
+    }
+  }
+
+  // 1) 关注白名单：先从 DOM/补充字段取作者，命中白名单直接放行并缓存
+  const authorText =
+    readSingleTextFromSelectors(card, config && config.authorSelectors, AUTHOR_SELECTORS) ||
+    readExtraAuthor(card);
+  if (isAuthorInFollowWhitelist(authorText)) {
+    logClipRuleDecision({
+      ruleIndex: -1,
+      durationSeconds: readStoredDuration(card),
+      ruleDurationSeconds: 0,
+      titleText: '',
+      tagTexts: [],
+      keywords: [],
+      authorText,
+      keywordMatched: false,
+      authorWhitelisted: true,
+      action: 'skip:follow_whitelist'
+    });
+    applyVisibility(card, readStoredDuration(card), config, false);
+    return;
+  }
+
   let durationSeconds = readStoredDuration(card);
   if (durationSeconds == null) {
     const durationText = extractDurationText(card, config);
@@ -305,15 +336,29 @@ function evaluateCard(card) {
       card.dataset.bsrbDurationSeconds = String(durationSeconds);
     }
   }
-  if (card.dataset.bsrbDecision === 'hide') {
+
+  // 2) 时长判定
+  if (
+    Number.isFinite(durationSeconds) &&
+    durationSeconds >= 0 &&
+    thresholdSeconds > 0 &&
+    durationSeconds < thresholdSeconds
+  ) {
+    if (decisionCacheKey) {
+      blockedVideoCache.set(decisionCacheKey, { result: true, timestamp: Date.now() });
+    }
     applyVisibility(card, durationSeconds, config, true);
     return;
   }
+
   const hideByKeywords = shouldHideSliceUpload(card, config, durationSeconds);
   if (hideByKeywords) {
     card.dataset.bsrbSliceFilter = 'keyword-hit';
   } else {
     delete card.dataset.bsrbSliceFilter;
+  }
+  if (decisionCacheKey && hideByKeywords) {
+    blockedVideoCache.set(decisionCacheKey, { result: true, timestamp: Date.now() });
   }
   applyVisibility(card, durationSeconds, config, hideByKeywords);
 }
@@ -498,29 +543,6 @@ function shouldHideSliceUpload(card, config, durationSeconds) {
   if (!card || !(card instanceof HTMLElement) || !Number.isFinite(durationSeconds)) {
     return false;
   }
-  const ids = extractVideoIds(card);
-  const decisionCacheKey = ids?.bvid ? `bvid:${ids.bvid}` : ids?.aid ? `aid:${ids.aid}` : null;
-  if (decisionCacheKey && blockedVideoCache.has(decisionCacheKey)) {
-    const cached = blockedVideoCache.get(decisionCacheKey);
-    if (cached && typeof cached.result === 'boolean') {
-      logClipRuleDecision({
-        ruleIndex: -1,
-        durationSeconds,
-        ruleDurationSeconds: durationSeconds,
-        titleText: readExtraTitle(card) || '',
-        tagTexts: readExtraTags(card),
-        keywords: [],
-        authorText: readSingleTextFromSelectors(card, config && config.authorSelectors, AUTHOR_SELECTORS),
-        keywordMatched: true,
-        authorWhitelisted: false,
-        action: cached.result ? 'block:cached' : 'skip:cached'
-      });
-      if (cached.result) {
-        return true;
-      }
-      // fall through if cached result was skip
-    }
-  }
   const rules = Array.isArray(clipSettings?.rules) ? clipSettings.rules : [];
   if (!rules.length) {
     return false;
@@ -581,9 +603,6 @@ function shouldHideSliceUpload(card, config, durationSeconds) {
         authorWhitelisted: true,
         action: 'skip:follow_whitelist'
       });
-      if (decisionCacheKey) {
-        blockedVideoCache.set(decisionCacheKey, { result: false, timestamp: Date.now() });
-      }
       return false;
     }
     if (!hasKeyword) {
@@ -599,9 +618,6 @@ function shouldHideSliceUpload(card, config, durationSeconds) {
         authorWhitelisted: false,
         action: 'skip:keyword_miss'
       });
-      if (decisionCacheKey) {
-        blockedVideoCache.set(decisionCacheKey, { result: false, timestamp: Date.now() });
-      }
       continue;
     }
     const authorWhitelisted = matchesOfficialAuthor(authorText, rule.allowedAuthors);
