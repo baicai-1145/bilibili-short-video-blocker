@@ -322,7 +322,13 @@ function shouldBypassPage() {
     return true;
   }
   const host = window.location.hostname || '';
-  return host.endsWith('space.bilibili.com');
+  if (host.endsWith('space.bilibili.com')) {
+    return true;
+  }
+  if (host.endsWith('search.bilibili.com')) {
+    return true;
+  }
+  return false;
 }
 
 function handleStorageChange(changes, areaName) {
