@@ -4,16 +4,23 @@ Chrome 插件：按照自定义阈值隐藏 B 站时长过短的视频推荐，�
 
 ## 使用方式
 
-1. 在 Chrome 浏览器地址栏输入 `chrome://extensions/`，打开右上角的“开发者模式”。
-2. 点击“加载已解压的扩展程序”，选择本仓库根目录。
-3. 加载后，点击浏览器工具栏中的扩展图标即可在弹窗内快速修改阈值；也可以在扩展详情页打开“扩展选项”进行配置。阈值为 `0` 表示禁用过滤。
-4. 回到 bilibili 页面刷新，时长低于阈值的视频卡片会被自动隐藏。
+### 下载安装
 
-## 开发说明
+1. 打开项目发布页：`https://github.com/baicai-1145/bilibili-short-video-blocker/releases`。
+2. 在最新的 Release 中找到 `Source code (zip)`，点击下载。
+3. 将下载得到的 zip 文件解压到任意本地目录（例如 `D:\bilibili-short-video-blocker`）。
 
-- `manifest.json`：Manifest V3 配置，声明 content script 与选项页。
-- `src/content.js`：内容脚本，读取阈值、扫描视频卡片并通过 MutationObserver 监听新增节点。
-- `options.html` / `options.css` / `src/options.js`：阈值配置界面与弹窗共用的 UI 与逻辑，使用 `chrome.storage` 同步至所有页面。
-- `popup.html`：工具栏弹窗入口，复用同一套设置表单。
+### 在 Chrome 中加载扩展
 
-默认阈值为 60 秒，可在弹窗或选项页中调整。若后续需要支持更多页面或自定义规则，可在 `CARD_CONFIGS` 中扩充选择器与解析逻辑。
+1. 在地址栏输入 `chrome://extensions/` 打开扩展管理页面。
+2. 打开右上角的“开发者模式”（Developer mode）。
+3. 点击“加载已解压的扩展程序”（Load unpacked），选择上一步解压后的目录（包含 `manifest.json` 的文件夹）。
+4. 加载成功后，你会在扩展列表中看到 “bilibili-short-video-blocker”。
+
+### 配置与使用
+
+1. 点击浏览器工具栏中的扩展图标，打开弹窗即可快速修改“短视频阈值”（单位：秒）。  
+   - 阈值为 `0` 表示禁用过滤（不隐藏任何视频）。  
+   - 默认阈值为 `60` 秒。
+2. 你也可以设置关键词规则、UP 主白名单等高级选项。
+3. 配置完成后，回到 bilibili 页面刷新，时长低于阈值且命中规则的视频卡片会被自动隐藏（包括首页、分区页和视频播放页右侧推荐栏）。
