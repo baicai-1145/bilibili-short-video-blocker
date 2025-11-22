@@ -113,14 +113,18 @@ const AUTHOR_SELECTORS = [
   '.name'
 ];
 
-const TAG_SELECTORS = [
-  '.bili-video-card__info--tag',
-  '.bili-video-card__info--topic',
-  '.video-card__info .tag',
-  '.video-card__tags .tag',
-  '.video-card__topics a',
-  '.bili-inline-tags span'
-];
+function normalizeTextListLocal(value) {
+  const values = Array.isArray(value) ? value : typeof value === 'string' ? [value] : [];
+  const result = [];
+  values.forEach((item) => {
+    String(item || '')
+      .split(/(?:\r?\n|\\n)+/)
+      .map((part) => part.trim())
+      .filter(Boolean)
+      .forEach((part) => result.push(part));
+  });
+  return result;
+}
 
 const CARD_CONFIGS = [
   {
@@ -133,8 +137,7 @@ const CARD_CONFIGS = [
     ],
     wrapperSelectors: ['.feed-card', '.bili-feed-card'],
     titleSelectors: TITLE_SELECTORS,
-    authorSelectors: AUTHOR_SELECTORS,
-    tagSelectors: TAG_SELECTORS
+    authorSelectors: AUTHOR_SELECTORS
   },
   {
     name: 'right-rail-card',
@@ -146,8 +149,7 @@ const CARD_CONFIGS = [
     ],
     durationSelectors: ['.duration', '.time', '.video-duration', '.card-duration', '.bili-video-card__stats__duration'],
     titleSelectors: TITLE_SELECTORS,
-    authorSelectors: AUTHOR_SELECTORS,
-    tagSelectors: TAG_SELECTORS
+    authorSelectors: AUTHOR_SELECTORS
   },
   {
     name: 'list-card',
@@ -159,8 +161,7 @@ const CARD_CONFIGS = [
     ],
     durationSelectors: ['.time', '.duration', '.video-duration', '.card-duration'],
     titleSelectors: TITLE_SELECTORS,
-    authorSelectors: AUTHOR_SELECTORS,
-    tagSelectors: TAG_SELECTORS
+    authorSelectors: AUTHOR_SELECTORS
   }
 ];
 
@@ -268,10 +269,7 @@ function readCardTitle(card, config) {
 }
 
 function readCardAuthor(card, config) {
-  let author = readSingleTextFromSelectors(card, config && config.authorSelectors, AUTHOR_SELECTORS);
-  if (!author) {
-    author = readExtraAuthor(card);
-  }
+  const author = readSingleTextFromSelectors(card, config && config.authorSelectors, AUTHOR_SELECTORS);
   return author || '';
 }
 
@@ -299,6 +297,21 @@ function init() {
       followNameSet = buildFollowNameSet(followSettings);
       decisionRecords = Array.isArray(records) ? records : [];
       hydrateBlockedCacheFromRecords(decisionRecords, true);
+      if (typeof console !== 'undefined' && console.debug) {
+        const ruleCount = Array.isArray(clipSettings?.rules) ? clipSettings.rules.length : 0;
+        const followCount = Array.isArray(followSettings?.follows)
+          ? followSettings.follows.length
+          : 0;
+        console.debug(
+          '[ShortVideoBlocker][ClipRule]',
+          'init:settings',
+          `thresholdSeconds=${thresholdSeconds}`,
+          `rules=${ruleCount}`,
+          `followEnabled=${Boolean(followSettings.enabled)}`,
+          `followCount=${followCount}`,
+          `decisionRecords=${decisionRecords.length}`
+        );
+      }
       ensureFollowWhitelist();
       scanForCards(document.body);
       observeMutations();
@@ -308,6 +321,21 @@ function init() {
       clipSettings = createClipSettings(DEFAULT_CLIP_SETTINGS);
       followSettings = createFollowSettings(DEFAULT_FOLLOW_SETTINGS);
       followNameSet = buildFollowNameSet(followSettings);
+      if (typeof console !== 'undefined' && console.debug) {
+        const ruleCount = Array.isArray(clipSettings?.rules) ? clipSettings.rules.length : 0;
+        const followCount = Array.isArray(followSettings?.follows)
+          ? followSettings.follows.length
+          : 0;
+        console.debug(
+          '[ShortVideoBlocker][ClipRule]',
+          'init:settings:fallback',
+          `thresholdSeconds=${thresholdSeconds}`,
+          `rules=${ruleCount}`,
+          `followEnabled=${Boolean(followSettings.enabled)}`,
+          `followCount=${followCount}`,
+          'decisionRecords=0'
+        );
+      }
       ensureFollowWhitelist();
       scanForCards(document.body);
       observeMutations();
@@ -437,15 +465,43 @@ function evaluateCard(card) {
   const authorText = readCardAuthor(card, config);
   let durationSeconds = readStoredDuration(card);
 
+  if (typeof console !== 'undefined' && console.debug) {
+    console.debug(
+      '[ShortVideoBlocker][ClipRule]',
+      'evaluate:dom',
+      `key=${decisionCacheKey || ''}`,
+      `title="${titleText || ''}"`,
+      `author="${authorText || ''}"`,
+      `storedDuration=${durationSeconds == null ? 'null' : durationSeconds}`,
+      ids || {}
+    );
+  }
+
   if (decisionCacheKey && decisionFinalCache.has(decisionCacheKey)) {
     const entry = decisionFinalCache.get(decisionCacheKey);
     const forceHide = entry && entry.result === 'block';
+    if (typeof console !== 'undefined' && console.debug) {
+      console.debug(
+        '[ShortVideoBlocker][ClipRule]',
+        'evaluate:cache-final-hit',
+        `key=${decisionCacheKey}`,
+        entry
+      );
+    }
     applyVisibility(card, durationSeconds, config, forceHide);
     return;
   }
   if (decisionCacheKey && blockedVideoCache.has(decisionCacheKey)) {
     const cached = blockedVideoCache.get(decisionCacheKey);
     if (cached && cached.result === true) {
+      if (typeof console !== 'undefined' && console.debug) {
+        console.debug(
+          '[ShortVideoBlocker][ClipRule]',
+          'evaluate:cache-blocked-hit',
+          `key=${decisionCacheKey}`,
+          cached
+        );
+      }
       applyVisibility(card, durationSeconds, config, true);
       decisionFinalCache.set(decisionCacheKey, { result: 'block', timestamp: cached.timestamp || Date.now() });
       return;
@@ -462,6 +518,14 @@ function evaluateCard(card) {
       result: 'allow',
       reason: 'follow_whitelist'
     });
+    if (typeof console !== 'undefined' && console.debug) {
+      console.debug(
+        '[ShortVideoBlocker][ClipRule]',
+        'evaluate:follow-whitelist-allow',
+        `key=${decisionCacheKey || ''}`,
+        `author="${authorText || ''}"`
+      );
+    }
     logClipRuleDecision({
       ruleIndex: -1,
       durationSeconds,
@@ -483,6 +547,15 @@ function evaluateCard(card) {
     durationSeconds = parseDurationToSeconds(durationText);
     if (durationSeconds != null) {
       card.dataset.bsrbDurationSeconds = String(durationSeconds);
+      if (typeof console !== 'undefined' && console.debug) {
+        console.debug(
+          '[ShortVideoBlocker][ClipRule]',
+          'evaluate:duration-parsed',
+          `key=${decisionCacheKey || ''}`,
+          `durationSeconds=${durationSeconds}`,
+          `durationText="${durationText || ''}"`
+        );
+      }
     }
   }
 
@@ -498,10 +571,19 @@ function evaluateCard(card) {
         id: decisionCacheKey,
         title: titleText,
         author: authorText,
-        durationSeconds,
-        result: 'block',
-        reason: 'duration'
+      durationSeconds,
+      result: 'block',
+      reason: 'duration'
       });
+    }
+    if (typeof console !== 'undefined' && console.debug) {
+      console.debug(
+        '[ShortVideoBlocker][ClipRule]',
+        'evaluate:duration-block',
+        `key=${decisionCacheKey || ''}`,
+        `durationSeconds=${durationSeconds}`,
+        `thresholdSeconds=${thresholdSeconds}`
+      );
     }
     applyVisibility(card, durationSeconds, config, true);
     return;
@@ -518,6 +600,14 @@ function evaluateCard(card) {
   }
   if (decisionCacheKey && hideByKeywords) {
     blockedVideoCache.set(decisionCacheKey, { result: true, timestamp: Date.now() });
+  }
+  if (typeof console !== 'undefined' && console.debug) {
+    console.debug(
+      '[ShortVideoBlocker][ClipRule]',
+      'evaluate:keyword-result',
+      `key=${decisionCacheKey || ''}`,
+      `hideByKeywords=${hideByKeywords}`
+    );
   }
   card.dataset.bsrbEvaluated = '1';
   applyVisibility(card, durationSeconds, config, hideByKeywords);
@@ -666,7 +756,7 @@ function matchesOfficialAuthor(text, authors) {
   if (!normalized || !Array.isArray(authors) || !authors.length) {
     return false;
   }
-  return authors.some((author) => normalized.includes(author));
+  return authors.some((author) => normalized === author);
 }
 
 function logClipRuleDecision(details) {
@@ -709,6 +799,7 @@ function shouldHideSliceUpload(card, config, durationSeconds, decisionCacheKey, 
   }
   const hintedTitle = hints && typeof hints === 'object' ? hints.titleText : '';
   const hintedAuthor = hints && typeof hints === 'object' ? hints.authorText : '';
+  let shouldBlockByKeyword = false;
   for (let index = 0; index < rules.length; index += 1) {
     const rule = rules[index];
     if (
@@ -721,56 +812,20 @@ function shouldHideSliceUpload(card, config, durationSeconds, decisionCacheKey, 
     }
     let titleText = hintedTitle ||
       readSingleTextFromSelectors(card, config && config.titleSelectors, TITLE_SELECTORS);
-    const tagTexts = readMultipleTextsFromSelectors(
-      card,
-      config && config.tagSelectors,
-      TAG_SELECTORS
-    );
     const extraTitle = readExtraTitle(card);
     if (!titleText && extraTitle) {
       titleText = extraTitle;
     }
     const extraTags = readExtraTags(card);
-    if (extraTags.length) {
-      tagTexts.push(...extraTags);
-    }
-    let authorText = hintedAuthor ||
+    const tagTexts = extraTags.length ? extraTags.slice() : [];
+    const authorText = hintedAuthor ||
       readSingleTextFromSelectors(card, config && config.authorSelectors, AUTHOR_SELECTORS);
-    const extraAuthor = readExtraAuthor(card);
-    if (!authorText && extraAuthor) {
-      authorText = extraAuthor;
-    }
     if (tagTexts.length === 0 && card.dataset.bsrbMetadataLoading !== '1') {
       requestAdditionalMetadata(card);
     }
     const hasKeyword =
       matchesKeywords(titleText, rule.keywords) ||
       tagTexts.some((tag) => matchesKeywords(tag, rule.keywords));
-    if (isAuthorInFollowWhitelist(authorText)) {
-      logClipRuleDecision({
-        ruleIndex: index,
-        durationSeconds,
-        ruleDurationSeconds: rule.maxDurationSeconds,
-        titleText,
-        tagTexts,
-        keywords: rule.keywords,
-        authorText,
-        keywordMatched: hasKeyword,
-        authorWhitelisted: true,
-        action: 'skip:follow_whitelist'
-      });
-      if (decisionCacheKey) {
-        recordDecision({
-          id: decisionCacheKey,
-          title: titleText,
-          author: authorText,
-          durationSeconds,
-          result: 'allow',
-          reason: 'follow_whitelist'
-        });
-      }
-      return false;
-    }
     if (!hasKeyword) {
       logClipRuleDecision({
         ruleIndex: index,
@@ -779,7 +834,7 @@ function shouldHideSliceUpload(card, config, durationSeconds, decisionCacheKey, 
         titleText,
         tagTexts,
         keywords: rule.keywords,
-        authorText: null,
+        authorText,
         keywordMatched: false,
         authorWhitelisted: false,
         action: 'skip:keyword_miss'
@@ -800,16 +855,6 @@ function shouldHideSliceUpload(card, config, durationSeconds, decisionCacheKey, 
         authorWhitelisted: true,
         action: 'skip:white_list'
       });
-      if (decisionCacheKey) {
-        recordDecision({
-          id: decisionCacheKey,
-          title: titleText,
-          author: authorText,
-          durationSeconds,
-          result: 'allow',
-          reason: 'rule_author'
-        });
-      }
       continue;
     }
     logClipRuleDecision({
@@ -834,10 +879,10 @@ function shouldHideSliceUpload(card, config, durationSeconds, decisionCacheKey, 
         reason: 'keyword'
       });
     }
-    return true;
+    shouldBlockByKeyword = true;
   }
   // 仅在调试时输出无规则信息
-  return false;
+  return shouldBlockByKeyword;
 }
 
 function createClipSettings(rawSettings) {
@@ -850,12 +895,12 @@ function createClipSettings(rawSettings) {
   const rules = normalizedRules
     .map((rule) => ({
       enabled: rule.enabled !== false,
-      keywords: Array.isArray(rule.keywords)
-        ? rule.keywords.map((text) => String(text || '').trim().toLowerCase()).filter(Boolean)
-        : [],
-      allowedAuthors: Array.isArray(rule.allowedAuthors)
-        ? rule.allowedAuthors.map((text) => String(text || '').trim().toLowerCase()).filter(Boolean)
-        : [],
+      keywords: normalizeTextListLocal(rule.keywords)
+        .map((text) => String(text || '').trim().toLowerCase())
+        .filter(Boolean),
+      allowedAuthors: normalizeTextListLocal(rule.allowedAuthors)
+        .map((text) => String(text || '').trim().toLowerCase())
+        .filter(Boolean),
       maxDurationSeconds:
         Number.isFinite(rule.maxDurationSeconds) && rule.maxDurationSeconds > 0
           ? rule.maxDurationSeconds
@@ -1234,10 +1279,19 @@ function fetchVideoTags(bvid) {
       if (!json || json.code !== 0 || !Array.isArray(json.data)) {
         return [];
       }
-      return json.data
+      const tags = json.data
         .map((tag) => tag.tag_name || tag.name || '')
         .map((value) => String(value || '').trim())
         .filter(Boolean);
+      if (typeof console !== 'undefined' && console.debug) {
+        console.debug(
+          '[ShortVideoBlocker][ClipRule]',
+          'fetch-tags:success',
+          `bvid=${bvid}`,
+          tags
+        );
+      }
+      return tags;
     })
     .catch((error) => {
       if (typeof console !== 'undefined' && console.debug) {

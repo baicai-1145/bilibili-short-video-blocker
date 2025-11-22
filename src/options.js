@@ -173,10 +173,10 @@ function addRuleEditor(rule = {}) {
     : 20;
   durationInput.value = String(minutes);
   keywordsInput.value = Array.isArray(rule.keywords)
-    ? rule.keywords.join('\\n')
+    ? rule.keywords.join('\n')
     : '';
   authorsInput.value = Array.isArray(rule.allowedAuthors)
-    ? rule.allowedAuthors.join('\\n')
+    ? rule.allowedAuthors.join('\n')
     : '';
 
   if (removeButton) {
