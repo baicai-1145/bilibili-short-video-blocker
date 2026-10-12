@@ -1,5 +1,7 @@
 const form = document.getElementById('threshold-form');
 const thresholdInput = document.getElementById('threshold-input');
+const cleanEndingEnableInput = document.getElementById('clean-ending-enable');
+const hideOperatorCardsEnableInput = document.getElementById('hide-operator-cards-enable');
 const rulesContainer = document.getElementById('clip-rules');
 const addRuleButton = document.getElementById('add-rule');
 const ruleTemplate = document.getElementById('clip-rule-template');
@@ -8,6 +10,17 @@ const followStatusText = document.getElementById('follow-status-text');
 const followRefreshButton = document.getElementById('follow-refresh');
 const followReloadButton = document.getElementById('follow-reload');
 const followListContainer = document.getElementById('follow-list');
+const blacklistEnableInput = document.getElementById('blacklist-enable');
+const customBlacklistInput = document.getElementById('custom-blacklist-input');
+const blacklistStatusText = document.getElementById('blacklist-status-text');
+const blacklistRefreshButton = document.getElementById('blacklist-refresh');
+const blacklistReloadButton = document.getElementById('blacklist-reload');
+const blacklistListContainer = document.getElementById('blacklist-list');
+const blockVideoInput = document.getElementById('block-video-input');
+const blockVideoBtn = document.getElementById('block-video-btn');
+const blockedVideosStatus = document.getElementById('blocked-videos-status');
+const blockedVideosListContainer = document.getElementById('blocked-videos-list');
+const clearBlockedVideosBtn = document.getElementById('clear-blocked-videos-btn');
 const decisionReloadButton = document.getElementById('decision-reload');
 const decisionClearButton = document.getElementById('decision-clear');
 const decisionBlockList = document.getElementById('decision-block-list');
@@ -33,13 +46,26 @@ const FALLBACK_CLIP_SETTINGS = {
 };
 const FOLLOW_SETTINGS_KEY =
   shared && shared.FOLLOW_SETTINGS_KEY ? shared.FOLLOW_SETTINGS_KEY : 'followWhitelistSettings';
+const BLACKLIST_SETTINGS_KEY =
+  shared && shared.BLACKLIST_SETTINGS_KEY ? shared.BLACKLIST_SETTINGS_KEY : 'authorBlacklistSettings';
+const CLEAN_ENDING_KEY =
+  shared && shared.CLEAN_ENDING_KEY ? shared.CLEAN_ENDING_KEY : 'cleanEndingEnabled';
+const OPERATOR_CARDS_KEY =
+  shared && shared.OPERATOR_CARDS_KEY ? shared.OPERATOR_CARDS_KEY : 'hideOperatorCardsEnabled';
+const BLOCKED_VIDEOS_KEY =
+  shared && shared.BLOCKED_VIDEOS_KEY ? shared.BLOCKED_VIDEOS_KEY : 'customBlockedVideos';
 const DECISION_RECORDS_KEY =
   shared && shared.DECISION_RECORDS_KEY ? shared.DECISION_RECORDS_KEY : 'decisionRecords';
 const FALLBACK_FOLLOW_SETTINGS = shared
   ? { ...shared.DEFAULT_FOLLOW_SETTINGS }
   : { enabled: true, lastFetched: 0, follows: [] };
+const FALLBACK_BLACKLIST_SETTINGS = shared
+  ? { ...shared.DEFAULT_BLACKLIST_SETTINGS }
+  : { enabled: true, lastFetched: 0, biliBlacks: [], customBlacks: [] };
 
 let currentFollowSettings = getFallbackFollowSettings();
+let currentBlacklistSettings = getFallbackBlacklistSettings();
+let currentBlockedVideos = [];
 let latestDecisionRecords = { block: [], allow: [] };
 
 init();
@@ -63,6 +89,28 @@ function init() {
       refreshFollowSettingsFromStorage(true);
     });
   }
+  if (blacklistRefreshButton) {
+    blacklistRefreshButton.addEventListener('click', handleBlacklistRefresh);
+  }
+  if (blacklistReloadButton) {
+    blacklistReloadButton.addEventListener('click', () => {
+      refreshBlacklistSettingsFromStorage(true);
+    });
+  }
+  if (blockVideoBtn) {
+    blockVideoBtn.addEventListener('click', handleManualVideoBlock);
+  }
+  if (blockVideoInput) {
+    blockVideoInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        handleManualVideoBlock();
+      }
+    });
+  }
+  if (clearBlockedVideosBtn) {
+    clearBlockedVideosBtn.addEventListener('click', handleClearBlockedVideos);
+  }
   if (decisionReloadButton) {
     decisionReloadButton.addEventListener('click', () => {
       refreshDecisionRecords(true);
@@ -77,6 +125,20 @@ function init() {
         currentFollowSettings = normalizeFollowSettings(changes[FOLLOW_SETTINGS_KEY].newValue);
         renderFollowSettings(currentFollowSettings);
       }
+      if (changes[BLACKLIST_SETTINGS_KEY] && changes[BLACKLIST_SETTINGS_KEY].newValue) {
+        currentBlacklistSettings = normalizeBlacklistSettings(changes[BLACKLIST_SETTINGS_KEY].newValue);
+        renderBlacklistSettings(currentBlacklistSettings);
+      }
+      if (changes[BLOCKED_VIDEOS_KEY] && changes[BLOCKED_VIDEOS_KEY].newValue) {
+        currentBlockedVideos = normalizeBlockedVideos(changes[BLOCKED_VIDEOS_KEY].newValue);
+        renderBlockedVideos(currentBlockedVideos);
+      }
+      if (changes[CLEAN_ENDING_KEY] && cleanEndingEnableInput) {
+        cleanEndingEnableInput.checked = changes[CLEAN_ENDING_KEY].newValue !== false;
+      }
+      if (changes[OPERATOR_CARDS_KEY] && hideOperatorCardsEnableInput) {
+        hideOperatorCardsEnableInput.checked = changes[OPERATOR_CARDS_KEY].newValue !== false;
+      }
       if (changes[DECISION_RECORDS_KEY]) {
         refreshDecisionRecords();
       }
@@ -86,32 +148,59 @@ function init() {
 
 function loadSettings() {
   if (!shared) {
-    thresholdInput.value = String(DEFAULT_THRESHOLD_SECONDS);
+    // 输入框留空而不是填默认值：填了默认值就会在下次保存时被写回，
+    // 把用户已存的真实阈值覆盖掉。
+    thresholdInput.value = '';
+    thresholdInput.placeholder = '读取失败，未加载';
     renderRuleEditors(getFallbackClipSettings().rules);
     renderFollowSettings(getFallbackFollowSettings());
     renderDecisionRecords([], []);
-    renderStatus('共享配置未加载，已使用默认值', true);
+    renderStatus('共享配置未加载，请重新打开本页面', true);
     return;
   }
-  Promise.all([shared.readThreshold(storageArea), shared.readClipSettings(storageArea)])
-    .then(([rawThreshold, rawClipSettings]) => {
+  Promise.all([
+    shared.readThreshold(storageArea),
+    shared.readClipSettings(storageArea),
+    typeof shared.readCleanEnding === 'function'
+      ? shared.readCleanEnding(storageArea)
+      : Promise.resolve(true),
+    typeof shared.readHideOperatorCards === 'function'
+      ? shared.readHideOperatorCards(storageArea)
+      : Promise.resolve(true)
+  ])
+    .then(([rawThreshold, rawClipSettings, rawCleanEnding, rawHideOperatorCards]) => {
       const value = shared.normalizeThreshold(rawThreshold);
       thresholdInput.value = String(value);
+      if (cleanEndingEnableInput) {
+        cleanEndingEnableInput.checked = rawCleanEnding !== false;
+      }
+      if (hideOperatorCardsEnableInput) {
+        hideOperatorCardsEnableInput.checked = rawHideOperatorCards !== false;
+      }
       const normalizedClip =
         typeof shared.normalizeClipSettings === 'function'
           ? shared.normalizeClipSettings(rawClipSettings)
           : rawClipSettings;
       renderRuleEditors(normalizedClip?.rules);
       refreshFollowSettingsFromStorage();
+      refreshBlacklistSettingsFromStorage();
+      refreshBlockedVideosFromStorage();
       refreshDecisionRecords();
     })
     .catch(() => {
-      thresholdInput.value = String(DEFAULT_THRESHOLD_SECONDS);
+      // 同上：读取失败时留空，避免把默认值写回覆盖真实配置。
+      thresholdInput.value = '';
+      thresholdInput.placeholder = '读取失败，未加载';
+      if (cleanEndingEnableInput) {
+        cleanEndingEnableInput.checked = true;
+      }
       renderRuleEditors(getFallbackClipSettings().rules);
       currentFollowSettings = getFallbackFollowSettings();
       renderFollowSettings(currentFollowSettings);
+      currentBlacklistSettings = getFallbackBlacklistSettings();
+      renderBlacklistSettings(currentBlacklistSettings);
       renderDecisionRecords([], []);
-      renderStatus('读取存储失败，已使用默认值', true);
+      renderStatus('读取存储失败，其他设置已按默认值显示；阈值未加载，保存时会保留原值', true);
     });
 }
 
@@ -121,7 +210,12 @@ function handleSubmit(event) {
     renderStatus('共享配置未加载，无法保存', true);
     return;
   }
-  const thresholdValue = shared.normalizeThreshold(thresholdInput.value);
+  // 只在输入框里确实填了合法阈值时才写回。读取失败或尚在异步加载窗口时，
+  // 输入框会空着（或被填成默认值），一旦照写就会把用户已存的阈值静默覆盖成默认值。
+  const rawThresholdText = thresholdInput.value.trim();
+  const parsedThreshold = Number.parseInt(rawThresholdText, 10);
+  const thresholdWritable = rawThresholdText !== '' && Number.isFinite(parsedThreshold) && parsedThreshold >= 0;
+  const thresholdValue = thresholdWritable ? parsedThreshold : null;
   const clipRules = gatherRulesFromDom();
   const clipPayload = { rules: clipRules.length ? clipRules : getFallbackClipSettings().rules };
   const followPayload = {
@@ -129,13 +223,35 @@ function handleSubmit(event) {
     enabled: followEnableInput ? followEnableInput.checked : currentFollowSettings.enabled
   };
   currentFollowSettings = followPayload;
+
+  const customBlacklistText = customBlacklistInput ? customBlacklistInput.value : '';
+  const customBlacks = parseCustomBlacklistUids(customBlacklistText);
+  const blacklistPayload = {
+    ...currentBlacklistSettings,
+    enabled: blacklistEnableInput ? blacklistEnableInput.checked : currentBlacklistSettings.enabled,
+    customBlacks
+  };
+  currentBlacklistSettings = blacklistPayload;
+
   Promise.all([
-    shared.saveThreshold(thresholdValue, storageArea),
+    thresholdWritable ? shared.saveThreshold(thresholdValue, storageArea) : Promise.resolve(),
     shared.saveClipSettings(clipPayload, storageArea),
-    shared.saveFollowSettings ? shared.saveFollowSettings(followPayload, storageArea) : Promise.resolve()
+    shared.saveFollowSettings ? shared.saveFollowSettings(followPayload, followStorageArea || storageArea) : Promise.resolve(),
+    shared.saveBlacklistSettings
+      ? shared.saveBlacklistSettings(blacklistPayload, followStorageArea || storageArea)
+      : Promise.resolve(),
+    shared.saveCleanEnding
+      ? shared.saveCleanEnding(cleanEndingEnableInput ? cleanEndingEnableInput.checked : true, storageArea)
+      : Promise.resolve(),
+    shared.saveHideOperatorCards
+      ? shared.saveHideOperatorCards(
+          hideOperatorCardsEnableInput ? hideOperatorCardsEnableInput.checked : true,
+          storageArea
+        )
+      : Promise.resolve()
   ])
     .then(() => {
-      renderStatus('设置已保存');
+      renderStatus(thresholdWritable ? '设置已保存' : '设置已保存（阈值未填写或无效，已保留原值）');
     })
     .catch(() => {
       renderStatus('保存失败，请重试', true);
@@ -254,6 +370,13 @@ function getFallbackFollowSettings() {
   return { ...FALLBACK_FOLLOW_SETTINGS, follows: [] };
 }
 
+function getFallbackBlacklistSettings() {
+  if (shared && typeof shared.normalizeBlacklistSettings === 'function') {
+    return shared.normalizeBlacklistSettings(FALLBACK_BLACKLIST_SETTINGS);
+  }
+  return { ...FALLBACK_BLACKLIST_SETTINGS, biliBlacks: [], customBlacks: [] };
+}
+
 function refreshRuleIndexes() {
   if (!rulesContainer) {
     return;
@@ -291,7 +414,78 @@ function renderFollowSettings(settings) {
       followListContainer.textContent = '暂无缓存的关注名单';
     } else {
       followListContainer.innerHTML = follows
-        .map((entry) => `<span class="follow-list__item">${entry.name || ''}</span>`)
+        .map((entry) => `<span class="follow-list__item">${escapeHtml(entry.name || '')}</span>`)
+        .join('');
+    }
+  }
+}
+
+function parseCustomBlacklistUids(text) {
+  if (!text) return [];
+  const uids = [];
+  const lines = text.split(/[\n,，\s]+/);
+  for (const line of lines) {
+    const clean = line.trim();
+    if (!clean) continue;
+    const match = clean.match(/(?:space\.bilibili\.com\/)?(\d+)/);
+    if (match && match[1]) {
+      const num = Number.parseInt(match[1], 10);
+      if (Number.isFinite(num) && !uids.includes(num)) {
+        uids.push(num);
+      }
+    }
+  }
+  return uids;
+}
+
+function renderBlacklistSettings(settings) {
+  if (!settings) {
+    return;
+  }
+  if (blacklistEnableInput) {
+    blacklistEnableInput.checked = Boolean(settings.enabled);
+  }
+  if (customBlacklistInput) {
+    customBlacklistInput.value = Array.isArray(settings.customBlacks)
+      ? settings.customBlacks.join('\n')
+      : '';
+  }
+  if (blacklistStatusText) {
+    const biliCount = Array.isArray(settings.biliBlacks) ? settings.biliBlacks.length : 0;
+    const customCount = Array.isArray(settings.customBlacks) ? settings.customBlacks.length : 0;
+    const timeText =
+      settings.lastFetched && Number.isFinite(Number(settings.lastFetched))
+        ? new Date(settings.lastFetched).toLocaleString()
+        : '尚未同步';
+    if (!settings.enabled) {
+      blacklistStatusText.textContent = 'UP 主黑名单（仅比对 UID）已禁用';
+    } else if (biliCount === 0 && customCount === 0) {
+      blacklistStatusText.textContent = '已启用，等待同步 B 站黑名单或添加自定义 UID';
+    } else {
+      blacklistStatusText.textContent = `已同步 ${biliCount} 位 B 站拉黑 UID，自定义 ${customCount} 个 UID（${timeText}）`;
+    }
+  }
+  if (blacklistListContainer) {
+    const biliList = Array.isArray(settings.biliBlacks) ? settings.biliBlacks : [];
+    const customList = Array.isArray(settings.customBlacks) ? settings.customBlacks : [];
+    const items = [
+      ...customList.map((uid) => ({ uid, label: `UID: ${uid}`, type: '自定义' })),
+      ...biliList.map((entry) => ({
+        uid: entry.uid || entry.mid,
+        label: entry.name ? `${entry.name} (${entry.uid || entry.mid})` : `UID: ${entry.uid || entry.mid}`,
+        type: 'B站拉黑'
+      }))
+    ];
+    if (!items.length) {
+      blacklistListContainer.textContent = '暂无黑名单 UID';
+    } else {
+      blacklistListContainer.innerHTML = items
+        .map(
+          (entry) =>
+            `<span class="follow-list__item" style="background:#fff1f0;color:#cf1322;border:1px solid #ffa39e;">${escapeHtml(
+              entry.label
+            )} <small style="color:#ff7875;">(${escapeHtml(entry.type)})</small></span>`
+        )
         .join('');
     }
   }
@@ -348,7 +542,16 @@ function renderDecisionList(container, records, emptyText) {
       const durationText = Number.isFinite(Number(record.durationSeconds))
         ? `${Math.round(record.durationSeconds)}s`
         : '未知时长';
-      const reasonText = record.reason ? `原因：${record.reason}` : '';
+      const reasonMap = {
+        duration: '低于时长阈值',
+        clip_rule: '命中切片规则',
+        follow_whitelist: '关注白名单放行',
+        author_blacklist: '命中 UP 主黑名单',
+        single_video_blacklist: '手动拉黑该视频'
+      };
+      const reasonText = record.reason
+        ? `原因：${reasonMap[record.reason] || record.reason}`
+        : '';
       const reasonLabel = reasonText || '原因：-';
       return `
         <div class="decision-item">
@@ -433,6 +636,186 @@ function normalizeFollowSettings(rawFollowSettings) {
     return shared.normalizeFollowSettings(rawFollowSettings);
   }
   return rawFollowSettings || getFallbackFollowSettings();
+}
+
+function normalizeBlacklistSettings(rawBlacklistSettings) {
+  if (typeof shared.normalizeBlacklistSettings === 'function') {
+    return shared.normalizeBlacklistSettings(rawBlacklistSettings);
+  }
+  return rawBlacklistSettings || getFallbackBlacklistSettings();
+}
+
+function handleBlacklistRefresh() {
+  if (!shared || !shared.saveBlacklistSettings) {
+    renderStatus('共享配置未加载，无法清空黑名单缓存', true);
+    return;
+  }
+  currentBlacklistSettings = {
+    ...currentBlacklistSettings,
+    biliBlacks: [],
+    lastFetched: 0
+  };
+  renderBlacklistSettings(currentBlacklistSettings);
+  shared
+    .saveBlacklistSettings(currentBlacklistSettings, followStorageArea || storageArea)
+    .then(() => {
+      renderStatus('B 站黑名单缓存已清空，下次访问 B 站页面时会重新同步');
+    })
+    .catch(() => {
+      renderStatus('清空黑名单缓存失败', true);
+    });
+}
+
+function refreshBlacklistSettingsFromStorage(showStatusOnError = false) {
+  if (!shared || !shared.readBlacklistSettings) {
+    currentBlacklistSettings = getFallbackBlacklistSettings();
+    renderBlacklistSettings(currentBlacklistSettings);
+    return Promise.resolve();
+  }
+  return shared
+    .readBlacklistSettings(followStorageArea || storageArea)
+    .then((rawBlacklistSettings) => {
+      currentBlacklistSettings = normalizeBlacklistSettings(rawBlacklistSettings);
+      renderBlacklistSettings(currentBlacklistSettings);
+    })
+    .catch(() => {
+      currentBlacklistSettings = getFallbackBlacklistSettings();
+      renderBlacklistSettings(currentBlacklistSettings);
+      if (showStatusOnError) {
+        renderStatus('刷新黑名单失败', true);
+      }
+    });
+}
+
+function renderBlockedVideos(videos) {
+  const list = Array.isArray(videos) ? videos : [];
+  if (blockedVideosStatus) {
+    blockedVideosStatus.textContent = `已屏蔽 ${list.length} 个视频`;
+  }
+  if (!blockedVideosListContainer) {
+    return;
+  }
+  if (!list.length) {
+    blockedVideosListContainer.textContent = '暂无拉黑的视频';
+    return;
+  }
+  blockedVideosListContainer.innerHTML = list
+    .map((item) => {
+      const timeText = item.timestamp ? new Date(item.timestamp).toLocaleString() : '';
+      const bvid = item.bvid || (item.aid ? `av${item.aid}` : item.id || '');
+      return `
+        <div class="decision-item" style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
+          <div style="flex: 1; min-width: 0;">
+            <div class="decision-item__title" style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${escapeHtml(
+              item.title || bvid || '未命名视频'
+            )}</div>
+            <div class="decision-item__meta">${item.author ? `UP：${escapeHtml(item.author)} ｜ ` : ''}${bvid ? `ID：${escapeHtml(bvid)}` : ''}${timeText ? ` ｜ ${escapeHtml(timeText)}` : ''}</div>
+          </div>
+          <button type="button" class="button button--secondary unblock-video-btn" data-video-id="${escapeHtml(
+            item.id
+          )}" style="padding: 3px 8px; font-size: 11px; flex-shrink: 0;">解除</button>
+        </div>
+      `;
+    })
+    .join('');
+
+  blockedVideosListContainer.querySelectorAll('.unblock-video-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const vid = btn.getAttribute('data-video-id');
+      handleUnblockVideo(vid);
+    });
+  });
+}
+
+function handleManualVideoBlock() {
+  if (!blockVideoInput) return;
+  const raw = blockVideoInput.value.trim();
+  if (!raw) return;
+  let bvid = '';
+  let aid = null;
+  const bvMatch = raw.match(/BV[0-9A-Za-z]{10}/i);
+  if (bvMatch) {
+    bvid = bvMatch[0];
+  } else {
+    const avMatch = raw.match(/av(\\d+)/i);
+    if (avMatch) {
+      aid = Number.parseInt(avMatch[1], 10);
+    }
+  }
+  if (!bvid && aid == null) {
+    renderStatus('未能识别出有效的 BV 号或 AV 号', true);
+    return;
+  }
+  const id = bvid || `aid:${aid}`;
+  if (currentBlockedVideos.some((item) => item && item.id === id)) {
+    renderStatus('该视频已在黑名单中', true);
+    return;
+  }
+  const entry = {
+    id,
+    bvid,
+    aid,
+    title: `手动拉黑 (${bvid || `av${aid}`})`,
+    author: '',
+    authorUid: null,
+    timestamp: Date.now()
+  };
+  currentBlockedVideos = [entry, ...currentBlockedVideos];
+  renderBlockedVideos(currentBlockedVideos);
+  blockVideoInput.value = '';
+  const area = followStorageArea || storageArea;
+  if (shared && typeof shared.saveBlockedVideos === 'function') {
+    shared.saveBlockedVideos(currentBlockedVideos, area).then(() => {
+      renderStatus(`已拉黑视频 ${bvid || `av${aid}`}`);
+    });
+  }
+}
+
+function handleUnblockVideo(videoId) {
+  if (!videoId) return;
+  currentBlockedVideos = currentBlockedVideos.filter((item) => item && item.id !== videoId);
+  renderBlockedVideos(currentBlockedVideos);
+  const area = followStorageArea || storageArea;
+  if (shared && typeof shared.saveBlockedVideos === 'function') {
+    shared.saveBlockedVideos(currentBlockedVideos, area).then(() => {
+      renderStatus('已解除该视频拉黑');
+    });
+  }
+}
+
+function handleClearBlockedVideos() {
+  if (!currentBlockedVideos.length) {
+    renderStatus('视频黑名单已为空');
+    return;
+  }
+  currentBlockedVideos = [];
+  renderBlockedVideos(currentBlockedVideos);
+  const area = followStorageArea || storageArea;
+  if (shared && typeof shared.saveBlockedVideos === 'function') {
+    shared.saveBlockedVideos([], area).then(() => {
+      renderStatus('视频黑名单已清空');
+    });
+  }
+}
+
+function refreshBlockedVideosFromStorage() {
+  if (!shared || typeof shared.readBlockedVideos !== 'function') {
+    currentBlockedVideos = [];
+    renderBlockedVideos([]);
+    return Promise.resolve();
+  }
+  const area = followStorageArea || storageArea;
+  return shared.readBlockedVideos(area).then((videos) => {
+    currentBlockedVideos = Array.isArray(videos) ? videos : [];
+    renderBlockedVideos(currentBlockedVideos);
+  });
+}
+
+function normalizeBlockedVideos(value) {
+  if (shared && typeof shared.normalizeBlockedVideos === 'function') {
+    return shared.normalizeBlockedVideos(value);
+  }
+  return Array.isArray(value) ? value : [];
 }
 
 function renderStatus(message, isError = false) {

@@ -24,6 +24,22 @@
         </section>
 
         <section class="field-group">
+          <label class="label rule-toggle">
+            <input type="checkbox" id="clean-ending-enable" checked />
+            优化视频播放结束界面（隐藏推荐并居中）
+          </label>
+          <p class="hint">视频完播后，自动隐藏推荐视频网格并抹除模糊水印，将原生操作栏居中显示。</p>
+        </section>
+
+        <section class="field-group">
+          <label class="label rule-toggle">
+            <input type="checkbox" id="hide-operator-cards-enable" checked />
+            隐藏运营推广位（明星/品牌付费推广）
+          </label>
+          <p class="hint">自动识别并直接隐藏 B 站塞在推荐流里的运营推广卡（如右侧推荐栏置顶的付费推广视频），无需手动拉黑。关闭后恢复显示。</p>
+        </section>
+
+        <section class="field-group">
           <div class="label">关键词切片过滤规则</div>
           <p class="hint">可配置多条规则，逐条匹配关键词、UP 白名单与时长上限。</p>
           <div id="clip-rules" class="rules-container"></div>
@@ -42,6 +58,49 @@
             <button type="button" id="follow-reload" class="button button--secondary">刷新关注列表</button>
             <button type="button" id="follow-refresh" class="button button--secondary">清空关注缓存</button>
           </div>
+        </section>
+
+        <section class="field-group">
+          <label class="label rule-toggle">
+            <input type="checkbox" id="blacklist-enable" checked />
+            启用 UP 主黑名单过滤（仅匹配 UID）
+          </label>
+          <p class="hint">命中黑名单 UID 的 UP 主视频将被彻底屏蔽（不限时长）。自动同步 B 站已拉黑的 UP 主 UID，亦可手动添加自定义 UID。</p>
+          <div class="field-group" style="margin-top: 8px;">
+            <label for="custom-blacklist-input" class="label">自定义黑名单 UID（每行一个或粘贴主页链接）：</label>
+            <textarea
+              id="custom-blacklist-input"
+              class="textarea"
+              rows="3"
+              placeholder="例如：&#10;123456&#10;https://space.bilibili.com/946974"
+            ></textarea>
+          </div>
+          <p id="blacklist-status-text" class="follow-status">尚未同步 B 站黑名单</p>
+          <div id="blacklist-list" class="follow-list"></div>
+          <div class="follow-actions">
+            <button type="button" id="blacklist-reload" class="button button--secondary">刷新黑名单</button>
+            <button type="button" id="blacklist-refresh" class="button button--secondary">清空黑名单缓存</button>
+          </div>
+        </section>
+
+        <section class="field-group">
+          <div class="label">单个视频黑名单（手动拉黑）</div>
+          <p class="hint">在网页中鼠标悬浮在任意视频封面右上角，可点击 ✕ 一键拉黑；亦可在此输入 BV 号或视频链接手动拉黑。</p>
+          <div style="margin-top: 6px; display: flex; gap: 8px;">
+            <input
+              id="block-video-input"
+              class="input"
+              type="text"
+              placeholder="输入 BV号 或 视频链接"
+              style="flex: 1;"
+            />
+            <button type="button" id="block-video-btn" class="button" style="padding: 8px 16px; font-size: 13px;">拉黑视频</button>
+          </div>
+          <div class="decision-actions" style="margin-top: 8px;">
+            <p id="blocked-videos-status" class="follow-status" style="margin: 0; align-self: center;">已屏蔽 0 个视频</p>
+            <button type="button" id="clear-blocked-videos-btn" class="button button--secondary" style="margin-left: auto;">清空视频黑名单</button>
+          </div>
+          <div id="blocked-videos-list" class="decision-list" style="max-height: 200px; margin-top: 6px;"></div>
         </section>
 
         <section class="field-group">
